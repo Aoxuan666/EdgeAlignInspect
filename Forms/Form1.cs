@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
@@ -18,6 +18,69 @@ namespace EdgeAlignInspect
 			public string Id;
 
 			public string Name;
+		}
+
+		private struct RigidEditTransform
+		{
+			public double RefX;
+
+			public double RefY;
+
+			public double ImageX;
+
+			public double ImageY;
+
+			public double Angle;
+
+			public static RigidEditTransform Identity => new RigidEditTransform();
+
+			public bool IsIdentity => Math.Abs(RefX - ImageX) < 1E-06 && Math.Abs(RefY - ImageY) < 1E-06 && Math.Abs(Angle) < 1E-08;
+
+			public PointF ToImage(PointF point)
+			{
+				if (float.IsNaN(point.X) || float.IsNaN(point.Y))
+				{
+					return point;
+				}
+				double cos = Math.Cos(Angle);
+				double sin = Math.Sin(Angle);
+				double dx = point.X - RefX;
+				double dy = point.Y - RefY;
+				return new PointF((float)(ImageX + cos * dx - sin * dy), (float)(ImageY + sin * dx + cos * dy));
+			}
+
+			public PointF ToReference(PointF point)
+			{
+				if (float.IsNaN(point.X) || float.IsNaN(point.Y))
+				{
+					return point;
+				}
+				double cos = Math.Cos(Angle);
+				double sin = Math.Sin(Angle);
+				double dx = point.X - ImageX;
+				double dy = point.Y - ImageY;
+				return new PointF((float)(RefX + cos * dx + sin * dy), (float)(RefY - sin * dx + cos * dy));
+			}
+
+			public RotRectF ToImage(RotRectF roi)
+			{
+				return roi.IsEmpty ? roi : new RotRectF(ToImage(roi.Center), RotRectF.NormalizeAngle(roi.AngleRad + (float)Angle), roi.HalfLen1, roi.HalfLen2);
+			}
+
+			public RotRectF ToReference(RotRectF roi)
+			{
+				return roi.IsEmpty ? roi : new RotRectF(ToReference(roi.Center), RotRectF.NormalizeAngle(roi.AngleRad - (float)Angle), roi.HalfLen1, roi.HalfLen2);
+			}
+
+			public CircleRoiF ToImage(CircleRoiF roi)
+			{
+				return roi.IsEmpty ? roi : new CircleRoiF(ToImage(roi.Center), roi.Radius);
+			}
+
+			public CircleRoiF ToReference(CircleRoiF roi)
+			{
+				return roi.IsEmpty ? roi : new CircleRoiF(ToReference(roi.Center), roi.Radius);
+			}
 		}
 
 		private const int KeepRightPanelWidth = 510;
@@ -41,6 +104,12 @@ namespace EdgeAlignInspect
 		private bool _pendingImportedDisplayRefresh = false;
 
 		private bool _hasUnsavedChanges = false;
+
+		private RigidEditTransform _editTransform = RigidEditTransform.Identity;
+
+		private bool _editTransformResolved = true;
+
+		private bool _templateModelDirty = false;
 
 		private readonly List<BaseBindingOption> _baseBindingOptions = new List<BaseBindingOption>();
 
@@ -108,7 +177,11 @@ namespace EdgeAlignInspect
 
 		private NumericUpDown numDetTh;
 
+		private NumericUpDown numDetFitRatio;
+
 		private CheckBox chkEnableMatch;
+
+		private CheckBox chkEnableSearchRoi;
 
 		private ComboBox cboLanguage;
 
@@ -136,6 +209,7 @@ namespace EdgeAlignInspect
 		{
 			InitializeComponent();
 			canvas.ShowTemplateRoi = false;
+			canvas.ShowTemplateSearchRoi = false;
 			lblRoiHint.Text = string.Empty;
 			lblRoiHint.Visible = false;
 			lblRoiHint.Height = 0;
@@ -198,7 +272,12 @@ namespace EdgeAlignInspect
 				{
 					_job.TemplateRoi = CreateDefaultTemplateRoi();
 				}
-				canvas.SetAllRois(_job.TemplateRoi, _job.BaseRois.Select((BaseRoiItem x) => x.Roi), _job.CircleBaseRois.Select(ToCanvasCirclePair), _job.CirclePointRois.Select((CirclePointRoiItem x) => x.Circle), _job.DetectItems.Select((DetectRoiItem x) => x.Roi));
+				if (_job.Match.Enabled && _job.TemplateSearchRoi.IsEmpty && !_job.TemplateRoi.IsEmpty)
+				{
+					_job.TemplateSearchRoi = CreateDefaultTemplateSearchRoi(_job.TemplateRoi);
+				}
+				ResolveEditTransformForCurrentImage();
+				SetCanvasRoisFromJob();
 			}
 			finally
 			{
@@ -206,7 +285,7 @@ namespace EdgeAlignInspect
 			}
 			SelectInitialCanvasTarget();
 			_resultValid = false;
-			SetReady("READY", _job.Match.Enabled ? "图片已加载：模板匹配当前为启用状态，已自动补模板ROI；基准/检测ROI请按需手动添加。" : "图片已加载：模板匹配当前为关闭状态，不自动生成模板ROI；基准/检测ROI请按需手动添加。");
+			SetReady(_editTransformResolved ? "READY" : "模板未匹配", _editTransformResolved ? (_job.Match.Enabled ? "图片已加载，ROI 已按当前模板姿态显示。" : "图片已加载：模板匹配当前为关闭状态。") : "当前图像未找到模板，已锁定 ROI 编辑以保护模板参考坐标。");
 			RequestImportedDisplayRefresh();
 		}
 
@@ -218,35 +297,44 @@ namespace EdgeAlignInspect
 			}
 			_job = job.DeepClone() ?? new EdgeInspectJob();
 			_job.Normalize();
+			NormalizeTemplateTransformFlags(_job);
 			if (_src != null && _job.Match.Enabled && _job.TemplateRoi.IsEmpty)
 			{
 				_job.TemplateRoi = CreateDefaultTemplateRoi();
 			}
+			if (_src != null && _job.Match.Enabled && _job.TemplateSearchRoi.IsEmpty && !_job.TemplateRoi.IsEmpty)
+			{
+				_job.TemplateSearchRoi = CreateDefaultTemplateSearchRoi(_job.TemplateRoi);
+			}
+			_templateModelDirty = _job.Match.Enabled && !HasValidTeachData(_job);
+			ResolveEditTransformForCurrentImage();
 			_savedJob = _job.DeepClone();
 			_hasUnsavedChanges = false;
+			bool previousSuppressUiEvents = _suppressUiEvents;
+			bool previousSuppressRoiChanged = _suppressRoiChanged;
 			_suppressUiEvents = true;
 			_suppressRoiChanged = true;
 			try
 			{
 				LoadJobToUi(_job);
-				canvas.SetAllRois(_job.TemplateRoi, _job.BaseRois.Select((BaseRoiItem x) => x.Roi), _job.CircleBaseRois.Select(ToCanvasCirclePair), _job.CirclePointRois.Select((CirclePointRoiItem x) => x.Circle), _job.DetectItems.Select((DetectRoiItem x) => x.Roi));
+				SetCanvasRoisFromJob();
 				canvas.ShowRois = true;
 				canvas.ShowRuntimeRois = false;
 				canvas.ClearRuntimeRois();
+				SelectInitialCanvasTarget();
+				RefreshBaseBindingCombo();
+				LoadSelectedDetectToUi();
+				LoadCurrentBaseCaliperToUi();
+				LoadCurrentDetectCaliperToUi();
+				UpdateSelectionHint();
 			}
 			finally
 			{
-				_suppressUiEvents = false;
-				_suppressRoiChanged = false;
+				_suppressUiEvents = previousSuppressUiEvents;
+				_suppressRoiChanged = previousSuppressRoiChanged;
 			}
-			SelectInitialCanvasTarget();
-			RefreshBaseBindingCombo();
-			LoadSelectedDetectToUi();
-			LoadCurrentBaseCaliperToUi();
-			LoadCurrentDetectCaliperToUi();
-			UpdateSelectionHint();
 			_resultValid = false;
-			SetReady("READY", "参数已回显：模板ROI是否默认显示，完全由 Job.Match.Enabled 决定。");
+			SetReady(_editTransformResolved ? "READY" : "模板未匹配", _editTransformResolved ? "参数已回显；ROI 已按当前图像中的模板姿态显示。" : "当前图像未找到模板，已锁定 ROI 编辑以避免把当前坐标误写为模板参考坐标。");
 			RequestImportedDisplayRefresh();
 		}
 
@@ -455,7 +543,7 @@ namespace EdgeAlignInspect
 				_suppressRoiChanged = true;
 				try
 				{
-					canvas.SetAllRois(_job.TemplateRoi, _job.BaseRois.Select((BaseRoiItem x) => x.Roi), _job.CircleBaseRois.Select(ToCanvasCirclePair), _job.CirclePointRois.Select((CirclePointRoiItem x) => x.Circle), _job.DetectItems.Select((DetectRoiItem x) => x.Roi));
+					SetCanvasRoisFromJob();
 					canvas.ShowRois = true;
 					canvas.ShowRuntimeRois = false;
 				}
@@ -478,8 +566,14 @@ namespace EdgeAlignInspect
 					canvas.ShowRois = true;
 					canvas.ShowRuntimeRois = false;
 					canvas.ClearRuntimeRois();
-					PullCanvasRoisToJob();
-					MarkSelectedRoiAsManual();
+					if (canvas.SelectedRoi.Kind == CanvasRoiKind.Template)
+					{
+						RebaseCanvasRoisToCurrentImageReference();
+					}
+					else
+					{
+						PullCanvasRoisToJob();
+					}
 					NormalizeDetectBaseBindings();
 					RefreshBaseBindingCombo();
 					LoadSelectedDetectToUi();
@@ -507,10 +601,19 @@ namespace EdgeAlignInspect
 					{
 						if (flag)
 						{
+							RebaseCanvasRoisToCurrentImageReference();
 							_job.Match.Enabled = true;
 							RotRectF templateRoi = ((!_lastTemplateRoi.IsEmpty) ? _lastTemplateRoi : ((!_job.TemplateRoi.IsEmpty) ? _job.TemplateRoi : ((_src == null) ? default(RotRectF) : CreateDefaultTemplateRoi())));
 							_job.TemplateRoi = templateRoi;
+							if (_job.TemplateSearchRoi.IsEmpty && _src != null)
+							{
+								_job.TemplateSearchRoi = CreateDefaultTemplateSearchRoi(templateRoi);
+							}
 							canvas.SetTemplateRoi(templateRoi);
+							canvas.SetTemplateSearchRoi(_job.TemplateSearchRoi);
+							canvas.ShowTemplateSearchRoi = _job.UseTemplateSearchRoi;
+							_job.TeachData?.Clear();
+							_templateModelDirty = true;
 							if (!templateRoi.IsEmpty)
 							{
 								canvas.SetSelection(CanvasRoiKind.Template, 0);
@@ -518,6 +621,7 @@ namespace EdgeAlignInspect
 						}
 						else
 						{
+							RebaseCanvasRoisToCurrentImageReference();
 							_job.Match.Enabled = false;
 							if (!canvas.TemplateRoi.IsEmpty)
 							{
@@ -528,7 +632,10 @@ namespace EdgeAlignInspect
 								_lastTemplateRoi = _job.TemplateRoi;
 							}
 							_job.TemplateRoi = default(RotRectF);
+							_job.TemplateSearchRoi = default(RotRectF);
 							canvas.SetTemplateRoi(default(RotRectF));
+							canvas.SetTemplateSearchRoi(default(RotRectF));
+							canvas.ShowTemplateSearchRoi = false;
 							if (canvas.SelectedRoi.Kind == CanvasRoiKind.Template)
 							{
 								SelectInitialCanvasTarget();
@@ -554,6 +661,18 @@ namespace EdgeAlignInspect
 					{
 						SetReady("READY", "已关闭模板匹配：模板ROI已隐藏。");
 					}
+				}
+			};
+			chkEnableSearchRoi.CheckedChanged += delegate
+			{
+				if (!_suppressUiEvents)
+				{
+					_job.UseTemplateSearchRoi = chkEnableSearchRoi.Checked;
+					canvas.ShowTemplateSearchRoi = _job.Match.Enabled && _job.UseTemplateSearchRoi;
+					SyncUiToJobGlobal();
+					ClearResultVisualsBecauseRoiChanged();
+					_hasUnsavedChanges = true;
+					SetReady("READY", chkEnableSearchRoi.Checked ? "已启用模板搜索区域：模板匹配将限制在黄色搜索框内。" : "已关闭模板搜索区域：模板匹配将搜索整幅图像。");
 				}
 			};
 			chkUseReferenceLine.CheckedChanged += delegate
@@ -593,6 +712,7 @@ namespace EdgeAlignInspect
 			numDetMeasures.ValueChanged += CurrentDetectCaliperUiChanged;
 			numDetSigma.ValueChanged += CurrentDetectCaliperUiChanged;
 			numDetTh.ValueChanged += CurrentDetectCaliperUiChanged;
+			numDetFitRatio.ValueChanged += CurrentDetectCaliperUiChanged;
 			numMatchMinScore.ValueChanged += GlobalUiParamChanged;
 			numMatchAngleStart.ValueChanged += GlobalUiParamChanged;
 			numMatchAngleExtent.ValueChanged += GlobalUiParamChanged;
@@ -787,6 +907,10 @@ namespace EdgeAlignInspect
 		{
 			if (!_suppressUiEvents)
 			{
+				if (ReferenceEquals(sender, numMatchAngleStart) || ReferenceEquals(sender, numMatchAngleExtent))
+				{
+					_templateModelDirty = true;
+				}
 				SyncUiToJobGlobal();
 				ClearResultVisualsBecauseRoiChanged();
 			}
@@ -869,9 +993,27 @@ namespace EdgeAlignInspect
 				}
 			}
 			EdgeInspectJob edgeInspectJob = _job.DeepClone();
+			NormalizeTemplateTransformFlags(edgeInspectJob);
 			if (edgeInspectJob.Match.Enabled)
 			{
-				edgeInspectJob.TeachData = _proc.Teach(_src, edgeInspectJob);
+				if (_templateModelDirty || !HasValidTeachData(edgeInspectJob))
+				{
+					List<PointF> featurePoints = edgeInspectJob.TeachData?.FeaturePoints;
+					int realPointCount = featurePoints == null ? 0 : featurePoints.Count((PointF x) => !float.IsNaN(x.X) && !float.IsNaN(x.Y));
+					if (realPointCount >= 12)
+					{
+						edgeInspectJob.TeachData = _proc.TeachFromOuterContourPoints(_src, edgeInspectJob, featurePoints);
+					}
+					else
+					{
+						if (!_editTransform.IsIdentity)
+						{
+							throw new InvalidOperationException("模板参考图与当前图像姿态不同，且没有足够的参考轮廓点用于重建模型。请先打开模板设置，将当前图像设为新的模板参考图。");
+						}
+						edgeInspectJob.TeachData = _proc.Teach(_src, edgeInspectJob);
+					}
+				}
+				_templateModelDirty = false;
 			}
 			else
 			{
@@ -888,6 +1030,7 @@ namespace EdgeAlignInspect
 			}
 			_job.DetectMode = DetectModeFromUi();
 			_job.Match.Enabled = chkEnableMatch.Checked;
+			_job.UseTemplateSearchRoi = chkEnableSearchRoi.Checked;
 			_job.Language = LanguageFromUi();
 			_job.Match.MinScore = (double)numMatchMinScore.Value;
 			_job.Match.AngleStart = (double)numMatchAngleStart.Value;
@@ -904,9 +1047,15 @@ namespace EdgeAlignInspect
 				MessageBox.Show("请先加载图片。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
 				return;
 			}
+			if (!_editTransformResolved)
+			{
+				MessageBox.Show("当前图像未找到模板，无法确定 ROI 的当前坐标。请加载能正常匹配的图像后再修改模板。", "模板未匹配", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+				return;
+			}
 			PullCanvasRoisToJob();
 			SyncUiToJobGlobal();
-			using (TemplateSettingsForm templateSettingsForm = new TemplateSettingsForm(_src, _job))
+			EdgeInspectJob currentImageJob = CreateCurrentImageReferenceJob();
+			using (TemplateSettingsForm templateSettingsForm = new TemplateSettingsForm(_src, currentImageJob))
 			{
 				if (templateSettingsForm.ShowDialog(this) != DialogResult.OK)
 				{
@@ -918,13 +1067,18 @@ namespace EdgeAlignInspect
 					return;
 				}
 				_job = job.DeepClone();
+				NormalizeTemplateTransformFlags(_job);
+				_editTransform = RigidEditTransform.Identity;
+				_editTransformResolved = true;
+				_templateModelDirty = !HasValidTeachData(_job);
+				canvas.AllowRoiEditing = true;
 				_hasUnsavedChanges = true;
 				_suppressUiEvents = true;
 				_suppressRoiChanged = true;
 				try
 				{
 					LoadJobToUi(_job);
-					canvas.SetAllRois(_job.TemplateRoi, _job.BaseRois.Select((BaseRoiItem x) => x.Roi), _job.CircleBaseRois.Select(ToCanvasCirclePair), _job.CirclePointRois.Select((CirclePointRoiItem x) => x.Circle), _job.DetectItems.Select((DetectRoiItem x) => x.Roi));
+					SetCanvasRoisFromJob();
 					canvas.ShowRois = true;
 					canvas.ShowRuntimeRois = false;
 					canvas.ClearRuntimeRois();
@@ -1011,7 +1165,11 @@ namespace EdgeAlignInspect
 					{
 						circlePointRoiItem.Caliper = _job.CircleCaliper?.DeepClone() ?? EdgeInspectJob.CreateDefaultCircleCaliper();
 					}
-					circlePointRoiItem.Caliper.Transition = PolToTransition(cboBasePol.SelectedIndex);
+					string transition = PolToTransition(cboBasePol.SelectedIndex);
+					if (transition != null)
+					{
+						circlePointRoiItem.Caliper.Transition = transition;
+					}
 					circlePointRoiItem.Caliper.MeasureSelect = "first";
 					circlePointRoiItem.Caliper.NumMeasures = (int)numBaseMeasures.Value;
 					circlePointRoiItem.Caliper.Sigma = (double)numBaseSigma.Value;
@@ -1032,7 +1190,11 @@ namespace EdgeAlignInspect
 					{
 						circleBaseRoiItem.Caliper = _job.CircleCaliper?.DeepClone() ?? EdgeInspectJob.CreateDefaultCircleCaliper();
 					}
-					circleBaseRoiItem.Caliper.Transition = PolToTransition(cboBasePol.SelectedIndex);
+					string transition2 = PolToTransition(cboBasePol.SelectedIndex);
+					if (transition2 != null)
+					{
+						circleBaseRoiItem.Caliper.Transition = transition2;
+					}
 					circleBaseRoiItem.Caliper.MeasureSelect = "first";
 					circleBaseRoiItem.Caliper.NumMeasures = (int)numBaseMeasures.Value;
 					circleBaseRoiItem.Caliper.Sigma = (double)numBaseSigma.Value;
@@ -1055,7 +1217,11 @@ namespace EdgeAlignInspect
 				{
 					baseRoiItem.Caliper = _job.BaseCaliper?.DeepClone() ?? EdgeInspectJob.CreateDefaultBaseCaliper();
 				}
-				baseRoiItem.Caliper.Transition = PolToTransition(cboBasePol.SelectedIndex);
+				string transition3 = PolToTransition(cboBasePol.SelectedIndex);
+				if (transition3 != null)
+				{
+					baseRoiItem.Caliper.Transition = transition3;
+				}
 				baseRoiItem.Caliper.MeasureSelect = "first";
 				baseRoiItem.Caliper.NumMeasures = (int)numBaseMeasures.Value;
 				baseRoiItem.Caliper.Sigma = (double)numBaseSigma.Value;
@@ -1079,11 +1245,16 @@ namespace EdgeAlignInspect
 				{
 					detectRoiItem.Caliper = _job.DetectCaliper?.DeepClone() ?? EdgeInspectJob.CreateDefaultDetectCaliper();
 				}
-				detectRoiItem.Caliper.Transition = PolToTransition(cboDetPol.SelectedIndex);
+				string transition = PolToTransition(cboDetPol.SelectedIndex);
+				if (transition != null)
+				{
+					detectRoiItem.Caliper.Transition = transition;
+				}
 				detectRoiItem.Caliper.MeasureSelect = "first";
 				detectRoiItem.Caliper.NumMeasures = (int)numDetMeasures.Value;
 				detectRoiItem.Caliper.Sigma = (double)numDetSigma.Value;
 				detectRoiItem.Caliper.Threshold = (double)numDetTh.Value;
+				detectRoiItem.Caliper.LineFitNormalRatio = (double)numDetFitRatio.Value / 100.0;
 				_job.DetectCaliper = detectRoiItem.Caliper.DeepClone();
 				_job.Normalize();
 			}
@@ -1091,7 +1262,8 @@ namespace EdgeAlignInspect
 
 		private void PullCanvasRoisToJob()
 		{
-			_job.TemplateRoi = canvas.TemplateRoi;
+			_job.TemplateRoi = _editTransform.ToReference(canvas.TemplateRoi);
+			_job.TemplateSearchRoi = canvas.TemplateSearchRoi;
 			while (_job.BaseRois.Count < canvas.BaseRois.Count)
 			{
 				_job.BaseRois.Add(new BaseRoiItem
@@ -1107,7 +1279,8 @@ namespace EdgeAlignInspect
 			}
 			for (int i = 0; i < canvas.BaseRois.Count; i++)
 			{
-				_job.BaseRois[i].Roi = canvas.BaseRois[i];
+				_job.BaseRois[i].Roi = _editTransform.ToReference(canvas.BaseRois[i]);
+				_job.BaseRois[i].UseTemplateTransform = true;
 				if (string.IsNullOrWhiteSpace(_job.BaseRois[i].Name))
 				{
 					_job.BaseRois[i].Name = $"基准{i + 1}";
@@ -1132,8 +1305,9 @@ namespace EdgeAlignInspect
 			}
 			for (int j = 0; j < canvas.CircleBaseRois.Count; j++)
 			{
-				_job.CircleBaseRois[j].Circle1 = canvas.CircleBaseRois[j].Circle1;
-				_job.CircleBaseRois[j].Circle2 = canvas.CircleBaseRois[j].Circle2;
+				_job.CircleBaseRois[j].Circle1 = _editTransform.ToReference(canvas.CircleBaseRois[j].Circle1);
+				_job.CircleBaseRois[j].Circle2 = _editTransform.ToReference(canvas.CircleBaseRois[j].Circle2);
+				_job.CircleBaseRois[j].UseTemplateTransform = true;
 				if (string.IsNullOrWhiteSpace(_job.CircleBaseRois[j].Name))
 				{
 					_job.CircleBaseRois[j].Name = $"圆基准{j + 1}";
@@ -1158,7 +1332,8 @@ namespace EdgeAlignInspect
 			}
 			for (int k = 0; k < canvas.CirclePointRois.Count; k++)
 			{
-				_job.CirclePointRois[k].Circle = canvas.CirclePointRois[k];
+				_job.CirclePointRois[k].Circle = _editTransform.ToReference(canvas.CirclePointRois[k]);
+				_job.CirclePointRois[k].UseTemplateTransform = true;
 				if (string.IsNullOrWhiteSpace(_job.CirclePointRois[k].Name))
 				{
 					_job.CirclePointRois[k].Name = $"圆点基准{k + 1}";
@@ -1185,7 +1360,8 @@ namespace EdgeAlignInspect
 			}
 			for (int l = 0; l < canvas.DetectRois.Count; l++)
 			{
-				_job.DetectItems[l].Roi = canvas.DetectRois[l];
+				_job.DetectItems[l].Roi = _editTransform.ToReference(canvas.DetectRois[l]);
+				_job.DetectItems[l].UseTemplateTransform = true;
 				if (string.IsNullOrWhiteSpace(_job.DetectItems[l].Name))
 				{
 					_job.DetectItems[l].Name = $"检测{l + 1}";
@@ -1197,44 +1373,6 @@ namespace EdgeAlignInspect
 				_job.NormalizeDetectBinding(_job.DetectItems[l]);
 			}
 			_job.Normalize();
-		}
-
-		private void MarkSelectedRoiAsManual()
-		{
-			CanvasRoiSelection selectedRoi = canvas.SelectedRoi;
-			if (!selectedRoi.IsValid)
-			{
-				return;
-			}
-			int index = selectedRoi.Index;
-			switch (selectedRoi.Kind)
-			{
-			case CanvasRoiKind.Base:
-				if (index >= 0 && index < _job.BaseRois.Count)
-				{
-					_job.BaseRois[index].UseTemplateTransform = false;
-				}
-				break;
-			case CanvasRoiKind.CircleBase1:
-			case CanvasRoiKind.CircleBase2:
-				if (index >= 0 && index < _job.CircleBaseRois.Count)
-				{
-					_job.CircleBaseRois[index].UseTemplateTransform = false;
-				}
-				break;
-			case CanvasRoiKind.CirclePoint:
-				if (index >= 0 && index < _job.CirclePointRois.Count)
-				{
-					_job.CirclePointRois[index].UseTemplateTransform = false;
-				}
-				break;
-			case CanvasRoiKind.Detect:
-				if (index >= 0 && index < _job.DetectItems.Count)
-				{
-					_job.DetectItems[index].UseTemplateTransform = false;
-				}
-				break;
-			}
 		}
 
 		private void NormalizeDetectBaseBindings()
@@ -1321,6 +1459,138 @@ namespace EdgeAlignInspect
 			return (_baseBindingOptions.Count <= 0) ? (-1) : 0;
 		}
 
+		private static bool HasValidTeachData(EdgeInspectJob job)
+		{
+			return job?.TeachData != null && job.TeachData.HasTemplate && job.TeachData.ModelBytes != null && job.TeachData.ModelBytes.Length > 0;
+		}
+
+		private static void NormalizeTemplateTransformFlags(EdgeInspectJob job)
+		{
+			if (job == null)
+			{
+				return;
+			}
+			foreach (BaseRoiItem item in job.BaseRois.Where((BaseRoiItem x) => x != null))
+			{
+				item.UseTemplateTransform = true;
+			}
+			foreach (CircleBaseRoiItem item2 in job.CircleBaseRois.Where((CircleBaseRoiItem x) => x != null))
+			{
+				item2.UseTemplateTransform = true;
+			}
+			foreach (CirclePointRoiItem item3 in job.CirclePointRois.Where((CirclePointRoiItem x) => x != null))
+			{
+				item3.UseTemplateTransform = true;
+			}
+			foreach (DetectRoiItem item4 in job.DetectItems.Where((DetectRoiItem x) => x != null))
+			{
+				item4.UseTemplateTransform = true;
+			}
+		}
+
+		private void ResolveEditTransformForCurrentImage()
+		{
+			_editTransform = RigidEditTransform.Identity;
+			_editTransformResolved = true;
+			if (_src != null && _job.Match.Enabled && HasValidTeachData(_job))
+			{
+				try
+				{
+					TemplateMatchQuickTestResult result = _proc.TestTemplateMatch(_src, _job.DeepClone());
+					if (result != null && result.Found)
+					{
+						_editTransform = new RigidEditTransform
+						{
+							RefX = _job.TeachData.RefCol,
+							RefY = _job.TeachData.RefRow,
+							ImageX = result.Col,
+							ImageY = result.Row,
+							Angle = result.Angle
+						};
+					}
+					else
+					{
+						_editTransformResolved = false;
+					}
+				}
+				catch
+				{
+					_editTransformResolved = false;
+				}
+			}
+			canvas.AllowRoiEditing = _editTransformResolved;
+		}
+
+		private void SetCanvasRoisFromJob()
+		{
+			canvas.SetAllRois(_editTransform.ToImage(_job.TemplateRoi), _job.BaseRois.Select((BaseRoiItem x) => _editTransform.ToImage(x.Roi)), _job.CircleBaseRois.Select((CircleBaseRoiItem x) => new CircleBaseRoiPair
+			{
+				Circle1 = _editTransform.ToImage(x.Circle1),
+				Circle2 = _editTransform.ToImage(x.Circle2)
+			}), _job.CirclePointRois.Select((CirclePointRoiItem x) => _editTransform.ToImage(x.Circle)), _job.DetectItems.Select((DetectRoiItem x) => _editTransform.ToImage(x.Roi)));
+			canvas.SetTemplateSearchRoi(_job.TemplateSearchRoi);
+			canvas.AllowRoiEditing = _editTransformResolved;
+			canvas.ShowTemplateSearchRoi = _job.Match.Enabled && _job.UseTemplateSearchRoi;
+		}
+
+		private void RebaseCanvasRoisToCurrentImageReference()
+		{
+			if (!_editTransformResolved)
+			{
+				return;
+			}
+			_editTransform = RigidEditTransform.Identity;
+			PullCanvasRoisToJob();
+			_job.TeachData?.Clear();
+			NormalizeTemplateTransformFlags(_job);
+			_templateModelDirty = true;
+			canvas.AllowRoiEditing = true;
+		}
+
+		private EdgeInspectJob CreateCurrentImageReferenceJob()
+		{
+			EdgeInspectJob result = _job.DeepClone();
+			NormalizeTemplateTransformFlags(result);
+			if (_editTransform.IsIdentity)
+			{
+				return result;
+			}
+			result.TemplateRoi = _editTransform.ToImage(result.TemplateRoi);
+			foreach (BaseRoiItem item in result.BaseRois.Where((BaseRoiItem x) => x != null))
+			{
+				item.Roi = _editTransform.ToImage(item.Roi);
+			}
+			foreach (CircleBaseRoiItem item2 in result.CircleBaseRois.Where((CircleBaseRoiItem x) => x != null))
+			{
+				item2.Circle1 = _editTransform.ToImage(item2.Circle1);
+				item2.Circle2 = _editTransform.ToImage(item2.Circle2);
+			}
+			foreach (CirclePointRoiItem item3 in result.CirclePointRois.Where((CirclePointRoiItem x) => x != null))
+			{
+				item3.Circle = _editTransform.ToImage(item3.Circle);
+			}
+			foreach (DetectRoiItem item4 in result.DetectItems.Where((DetectRoiItem x) => x != null))
+			{
+				item4.Roi = _editTransform.ToImage(item4.Roi);
+			}
+			List<PointF> points = result.TeachData?.FeaturePoints == null ? new List<PointF>() : result.TeachData.FeaturePoints.Select(_editTransform.ToImage).ToList();
+			List<TemplateEraseStroke> strokes = result.TeachData?.EraseStrokes == null ? new List<TemplateEraseStroke>() : result.TeachData.EraseStrokes.Where((TemplateEraseStroke x) => x != null).Select((TemplateEraseStroke x) => new TemplateEraseStroke
+			{
+				Center = _editTransform.ToImage(x.Center),
+				Radius = x.Radius
+			}).ToList();
+			if (result.TeachData == null)
+			{
+				result.TeachData = new TemplateTeachData();
+			}
+			result.TeachData.Clear();
+			result.TeachData.FeaturePoints = points;
+			result.TeachData.EraseStrokes = strokes;
+			result.TeachData.RefCol = result.TemplateRoi.Center.X;
+			result.TeachData.RefRow = result.TemplateRoi.Center.Y;
+			return result;
+		}
+
 		private static CircleBaseRoiPair ToCanvasCirclePair(CircleBaseRoiItem item)
 		{
 			return new CircleBaseRoiPair
@@ -1335,6 +1605,7 @@ namespace EdgeAlignInspect
 			if (job != null)
 			{
 				chkEnableMatch.Checked = job.Match.Enabled;
+				chkEnableSearchRoi.Checked = job.UseTemplateSearchRoi;
 				SetLanguageComboSelection(job.Language);
 				chkUseReferenceLine.Checked = job.UseReferenceLine;
 				cboDetectMode.SelectedIndex = DetectModeToIndex(job.DetectMode);
@@ -1374,6 +1645,7 @@ namespace EdgeAlignInspect
 				{
 					grpParams.Text = "参数（当前未选中检测ROI）";
 				}
+				bool previousSuppressUiEvents = _suppressUiEvents;
 				_suppressUiEvents = true;
 				try
 				{
@@ -1385,7 +1657,7 @@ namespace EdgeAlignInspect
 				}
 				finally
 				{
-					_suppressUiEvents = false;
+					_suppressUiEvents = previousSuppressUiEvents;
 				}
 				UpdateUseReferenceUiState();
 				FixRightPanelLayout();
@@ -1393,6 +1665,7 @@ namespace EdgeAlignInspect
 			}
 			DetectRoiItem detectRoiItem = _job.DetectItems[currentDetectIndex];
 			grpParams.Text = "参数（当前：" + detectRoiItem.Name + "）";
+			bool previousSuppressUiEvents2 = _suppressUiEvents;
 			_suppressUiEvents = true;
 			try
 			{
@@ -1420,7 +1693,7 @@ namespace EdgeAlignInspect
 			}
 			finally
 			{
-				_suppressUiEvents = false;
+				_suppressUiEvents = previousSuppressUiEvents2;
 			}
 			UpdateUseReferenceUiState();
 			FixRightPanelLayout();
@@ -1432,6 +1705,7 @@ namespace EdgeAlignInspect
 			if (circlePointCaliperEditorTargetIndex >= 0 && circlePointCaliperEditorTargetIndex < _job.CirclePointRois.Count)
 			{
 				SetBaseCaliperEditorEnabled(enabled: true, circleOutwardEnabled: true);
+				bool previousSuppressUiEvents = _suppressUiEvents;
 				_suppressUiEvents = true;
 				try
 				{
@@ -1445,13 +1719,14 @@ namespace EdgeAlignInspect
 				}
 				finally
 				{
-					_suppressUiEvents = false;
+					_suppressUiEvents = previousSuppressUiEvents;
 				}
 			}
 			int circleBaseCaliperEditorTargetIndex = GetCircleBaseCaliperEditorTargetIndex();
 			if (circleBaseCaliperEditorTargetIndex >= 0 && circleBaseCaliperEditorTargetIndex < _job.CircleBaseRois.Count)
 			{
 				SetBaseCaliperEditorEnabled(enabled: true, circleOutwardEnabled: true);
+				bool previousSuppressUiEvents2 = _suppressUiEvents;
 				_suppressUiEvents = true;
 				try
 				{
@@ -1465,12 +1740,13 @@ namespace EdgeAlignInspect
 				}
 				finally
 				{
-					_suppressUiEvents = false;
+					_suppressUiEvents = previousSuppressUiEvents2;
 				}
 			}
 			int baseCaliperEditorTargetIndex = GetBaseCaliperEditorTargetIndex();
 			bool flag = baseCaliperEditorTargetIndex >= 0 && baseCaliperEditorTargetIndex < _job.BaseRois.Count;
 			SetBaseCaliperEditorEnabled(flag);
+			bool previousSuppressUiEvents3 = _suppressUiEvents;
 			_suppressUiEvents = true;
 			try
 			{
@@ -1494,7 +1770,7 @@ namespace EdgeAlignInspect
 			}
 			finally
 			{
-				_suppressUiEvents = false;
+				_suppressUiEvents = previousSuppressUiEvents3;
 			}
 		}
 
@@ -1503,6 +1779,7 @@ namespace EdgeAlignInspect
 			int detectCaliperEditorTargetIndex = GetDetectCaliperEditorTargetIndex();
 			bool flag = detectCaliperEditorTargetIndex >= 0 && detectCaliperEditorTargetIndex < _job.DetectItems.Count;
 			SetDetectCaliperEditorEnabled(flag);
+			bool previousSuppressUiEvents = _suppressUiEvents;
 			_suppressUiEvents = true;
 			try
 			{
@@ -1512,6 +1789,7 @@ namespace EdgeAlignInspect
 					numDetMeasures.Value = ClampDecimal(40m, numDetMeasures);
 					numDetSigma.Value = ClampDecimal(1.0m, numDetSigma);
 					numDetTh.Value = ClampDecimal(15m, numDetTh);
+					numDetFitRatio.Value = ClampDecimal(60m, numDetFitRatio);
 				}
 				else
 				{
@@ -1520,17 +1798,19 @@ namespace EdgeAlignInspect
 					numDetMeasures.Value = ClampDecimal(caliperParameters.NumMeasures, numDetMeasures);
 					numDetSigma.Value = ClampDecimal((decimal)caliperParameters.Sigma, numDetSigma);
 					numDetTh.Value = ClampDecimal((decimal)caliperParameters.Threshold, numDetTh);
+					numDetFitRatio.Value = ClampDecimal((decimal)(caliperParameters.LineFitNormalRatio * 100.0), numDetFitRatio);
 				}
 			}
 			finally
 			{
-				_suppressUiEvents = false;
+				_suppressUiEvents = previousSuppressUiEvents;
 			}
 		}
 
 		private void RefreshBaseBindingCombo()
 		{
 			int selectedIndex = cboDetectBindBase.SelectedIndex;
+			bool previousSuppressUiEvents = _suppressUiEvents;
 			_suppressUiEvents = true;
 			try
 			{
@@ -1605,7 +1885,7 @@ namespace EdgeAlignInspect
 			}
 			finally
 			{
-				_suppressUiEvents = false;
+				_suppressUiEvents = previousSuppressUiEvents;
 			}
 			FixComboWidth(cboDetectBindBase, 120);
 		}
@@ -1834,11 +2114,13 @@ namespace EdgeAlignInspect
 			numDetMeasures.Enabled = enabled;
 			numDetSigma.Enabled = enabled;
 			numDetTh.Enabled = enabled;
+			numDetFitRatio.Enabled = enabled;
 		}
 
 		private void UpdateMatchUiState()
 		{
 			bool enabled = chkEnableMatch.Checked;
+			chkEnableSearchRoi.Enabled = enabled;
 			numMatchMinScore.Enabled = enabled;
 			numMatchAngleStart.Enabled = enabled;
 			numMatchAngleExtent.Enabled = enabled;
@@ -2018,7 +2300,12 @@ namespace EdgeAlignInspect
 				{
 					_job.TemplateRoi = CreateDefaultTemplateRoi();
 				}
-				canvas.SetAllRois(_job.TemplateRoi, _job.BaseRois.Select((BaseRoiItem x) => x.Roi), _job.CircleBaseRois.Select(ToCanvasCirclePair), _job.CirclePointRois.Select((CirclePointRoiItem x) => x.Circle), _job.DetectItems.Select((DetectRoiItem x) => x.Roi));
+				if (_job.Match.Enabled && _job.TemplateSearchRoi.IsEmpty && !_job.TemplateRoi.IsEmpty)
+				{
+					_job.TemplateSearchRoi = CreateDefaultTemplateSearchRoi(_job.TemplateRoi);
+				}
+				ResolveEditTransformForCurrentImage();
+				SetCanvasRoisFromJob();
 			}
 			finally
 			{
@@ -2026,7 +2313,7 @@ namespace EdgeAlignInspect
 			}
 			SelectInitialCanvasTarget();
 			_resultValid = false;
-			SetReady("READY", _job.Match.Enabled ? "图片已加载：模板匹配启用，已自动生成模板ROI；基准/检测ROI请按需添加。" : "图片已加载：模板匹配关闭，不自动生成模板ROI；基准/检测ROI请按需添加。");
+			SetReady(_editTransformResolved ? "READY" : "模板未匹配", _editTransformResolved ? (_job.Match.Enabled ? "图片已加载，ROI 已按当前模板姿态显示。" : "图片已加载：模板匹配关闭。") : "当前图像未找到模板，已锁定 ROI 编辑以保护模板参考坐标。");
 			RequestImportedDisplayRefresh();
 		}
 
@@ -2203,6 +2490,23 @@ namespace EdgeAlignInspect
 			int num = _src.Width;
 			int num2 = _src.Height;
 			return RotRectF.FromAxisAligned(new RectangleF((float)num * 0.08f, (float)num2 * 0.1f, (float)num * 0.2f, (float)num2 * 0.2f));
+		}
+
+		private RotRectF CreateDefaultTemplateSearchRoi(RotRectF templateRoi)
+		{
+			if (_src == null || templateRoi.IsEmpty)
+			{
+				return default(RotRectF);
+			}
+			RectangleF bounds = templateRoi.BoundingBox();
+			float imageWidth = _src.Width;
+			float imageHeight = _src.Height;
+			float searchWidth = Math.Min(imageWidth, Math.Max(bounds.Width, Math.Min(imageWidth * 0.8f, Math.Max(bounds.Width * 2f, bounds.Width + 64f))));
+			float searchHeight = Math.Min(imageHeight, Math.Max(bounds.Height, Math.Min(imageHeight * 0.8f, Math.Max(bounds.Height * 2f, bounds.Height + 64f))));
+			float left = Math.Max(0f, Math.Min(bounds.Left + bounds.Width * 0.5f - searchWidth * 0.5f, imageWidth - searchWidth));
+			float top = Math.Max(0f, Math.Min(bounds.Top + bounds.Height * 0.5f - searchHeight * 0.5f, imageHeight - searchHeight));
+			RectangleF search = new RectangleF(left, top, searchWidth, searchHeight);
+			return search.Width > 2f && search.Height > 2f ? RotRectF.FromAxisAligned(search) : default(RotRectF);
 		}
 
 		private RotRectF CreateDefaultBaseRoi(int index)
@@ -2458,22 +2762,29 @@ namespace EdgeAlignInspect
 		{
 			switch (idx)
 			{
+			case 0:
+				return CaliperParameters.NegativeTransition;
 			case 1:
-				return "positive";
+				return CaliperParameters.PositiveTransition;
 			case 2:
-				return "all";
+				return CaliperParameters.AllTransition;
 			default:
-				return "negative";
+				return null;
 			}
 		}
 
 		private static int TransitionToPolIndex(string transition)
 		{
-			if (string.Equals(transition, "positive", StringComparison.OrdinalIgnoreCase))
+			string normalized;
+			if (!CaliperParameters.TryNormalizeTransition(transition, out normalized))
+			{
+				return 0;
+			}
+			if (normalized == CaliperParameters.PositiveTransition)
 			{
 				return 1;
 			}
-			if (string.Equals(transition, "all", StringComparison.OrdinalIgnoreCase))
+			if (normalized == CaliperParameters.AllTransition)
 			{
 				return 2;
 			}
@@ -2514,6 +2825,7 @@ namespace EdgeAlignInspect
 				Circle1 = x.Circle1RoiCur,
 				Circle2 = x.Circle2RoiCur
 			}) : Enumerable.Empty<CircleBaseRoiPair>(), Enumerable.Empty<CircleRoiF>(), r.DetectResults.Select((DetectRoiInspectResult x) => x.RoiCur));
+			canvas.SetRuntimeTemplateSearchRoi(r.TemplateSearchRoiCur);
 			canvas.ShowRuntimeRois = true;
 			canvas.ShowRois = false;
 			string text = ((!r.TemplateMatchEnabled) ? LocalizedText.Message("关闭", language) : (r.TemplateMatchOk ? $"OK({r.TemplateMatchScore:0.00})" : "NG"));
@@ -2585,29 +2897,14 @@ namespace EdgeAlignInspect
 					BaseRoiInspectResult baseRoiInspectResult = r.BaseResults[num2];
 					if (baseRoiInspectResult.Line != null && baseRoiInspectResult.Line.Success)
 					{
-						PointF p = baseRoiInspectResult.Line.P1;
-						PointF p2 = baseRoiInspectResult.Line.P2;
 						Color color = ((num2 == 0) ? Color.Cyan : Color.Orange);
-						if (_src != null && TryGetLineAcrossImage(p, p2, _src.Width, _src.Height, out var p3, out var p4))
+						canvas.OverlayLines.Add(new ColoredPolyline
 						{
-							canvas.OverlayLines.Add(new ColoredPolyline
-							{
-								Color = color,
-								Width = 2f,
-								Arrow = false,
-								Points = new List<PointF> { p3, p4 }
-							});
-						}
-						else
-						{
-							canvas.OverlayLines.Add(new ColoredPolyline
-							{
-								Color = color,
-								Width = 2f,
-								Arrow = false,
-								Points = new List<PointF> { p, p2 }
-							});
-						}
+							Color = color,
+							Width = 2f,
+							Arrow = false,
+							Points = new List<PointF> { baseRoiInspectResult.Line.P1, baseRoiInspectResult.Line.P2 }
+						});
 					}
 				}
 				for (int num3 = 0; num3 < r.CircleBaseResults.Count; num3++)
@@ -2617,18 +2914,13 @@ namespace EdgeAlignInspect
 					DrawCircleFitOverlay(circleBaseRoiInspectResult.Circle2, Color.Cyan, circleBaseRoiInspectResult.Name + "-圆2");
 					if (circleBaseRoiInspectResult.Line != null && circleBaseRoiInspectResult.Line.Success)
 					{
-						PointF p5 = circleBaseRoiInspectResult.Line.P1;
-						PointF p6 = circleBaseRoiInspectResult.Line.P2;
-						if (_src != null && TryGetLineAcrossImage(p5, p6, _src.Width, _src.Height, out var p7, out var p8))
+						canvas.OverlayLines.Add(new ColoredPolyline
 						{
-							canvas.OverlayLines.Add(new ColoredPolyline
-							{
-								Color = Color.Cyan,
-								Width = 2f,
-								Arrow = false,
-								Points = new List<PointF> { p7, p8 }
-							});
-						}
+							Color = Color.Cyan,
+							Width = 2f,
+							Arrow = false,
+							Points = new List<PointF> { circleBaseRoiInspectResult.Line.P1, circleBaseRoiInspectResult.Line.P2 }
+						});
 					}
 				}
 			}
@@ -2640,26 +2932,14 @@ namespace EdgeAlignInspect
 			{
 				if (item2.FittedLine != null && item2.FittedLine.Success)
 				{
-					PointF p9 = item2.FittedLine.P1;
-					PointF p10 = item2.FittedLine.P2;
-					if (_src != null && TryGetLineAcrossImage(p9, p10, _src.Width, _src.Height, out var p11, out var p12))
+					if (TryGetLocalFitSegment(item2.FittedLine, item2.RoiCur, out var p3, out var p4))
 					{
 						canvas.OverlayLines.Add(new ColoredPolyline
 						{
 							Color = Color.DeepSkyBlue,
 							Width = 2f,
 							Arrow = false,
-							Points = new List<PointF> { p11, p12 }
-						});
-					}
-					else
-					{
-						canvas.OverlayLines.Add(new ColoredPolyline
-						{
-							Color = Color.DeepSkyBlue,
-							Width = 2f,
-							Arrow = false,
-							Points = new List<PointF> { p9, p10 }
+							Points = new List<PointF> { p3, p4 }
 						});
 					}
 				}
@@ -2682,7 +2962,8 @@ namespace EdgeAlignInspect
 						Center = item3.RoiCur.Center,
 						Radius = 4f,
 						Color = Color.Red,
-						Label = item3.Name + " NG"
+						Label = item3.Name + " NG",
+						LabelPriority = 120
 					});
 				}
 			}
@@ -2692,55 +2973,50 @@ namespace EdgeAlignInspect
 				{
 					continue;
 				}
-				int num4 = 0;
-				int num5 = 0;
-				for (int num6 = 1; num6 < detectResult.Points.Count; num6++)
+				int maxDentIndex = -1;
+				int maxBurrIndex = -1;
+				double maxDentDelta = 0.0;
+				double maxBurrDelta = 0.0;
+				for (int num6 = 0; num6 < detectResult.Points.Count; num6++)
 				{
-					if (detectResult.Points[num6].DeltaPx > detectResult.Points[num4].DeltaPx)
+					double deltaPx = detectResult.Points[num6].DeltaPx;
+					if (deltaPx > maxDentDelta)
 					{
-						num4 = num6;
+						maxDentDelta = deltaPx;
+						maxDentIndex = num6;
 					}
-					if (detectResult.Points[num6].DeltaPx < detectResult.Points[num5].DeltaPx)
+					if (deltaPx < maxBurrDelta)
 					{
-						num5 = num6;
+						maxBurrDelta = deltaPx;
+						maxBurrIndex = num6;
 					}
 				}
-				int num7 = 5;
+				int num7 = Math.Max(4, (detectResult.Points.Count + 4) / 5);
 				for (int num8 = 0; num8 < detectResult.Points.Count; num8++)
 				{
 					EdgePointResult edgePointResult = detectResult.Points[num8];
-					Color color2 = (edgePointResult.IsBurr ? Color.Red : (edgePointResult.IsDent ? Color.Gold : Color.Lime));
-					bool flag2 = num8 == num4 || num8 == num5;
-					bool flag3 = flag2 || num8 % num7 == 0;
-					string label = null;
-					if (flag3)
-					{
-						if (detectResult.UseReferenceLine)
-						{
-							label = ((num8 == num4) ? $"{detectResult.Name} MAX 局部={edgePointResult.DeltaValue:+0.0000;-0.0000;0.0000}mm" : ((num8 != num5) ? $"局部={edgePointResult.DeltaValue:+0.0000;-0.0000;0.0000}mm" : $"{detectResult.Name} MIN 局部={edgePointResult.DeltaValue:+0.0000;-0.0000;0.0000}mm"));
-						}
-						else
-						{
-							label = ((num8 == num4) ? $"{detectResult.Name} MAX Δ={edgePointResult.DeltaValue:+0.0000;-0.0000;0.0000}mm" : ((num8 != num5) ? $"实测={edgePointResult.SignedDistanceValue:+0.0000;-0.0000;0.0000}mm Δ={edgePointResult.DeltaValue:+0.0000;-0.0000;0.0000}mm" : $"{detectResult.Name} MIN Δ={edgePointResult.DeltaValue:+0.0000;-0.0000;0.0000}mm"));
-						}
-					}
+					Color color2 = ((edgePointResult.IsBurr || edgePointResult.IsDent) ? Color.Red : Color.Lime);
+					bool flag2 = num8 == maxDentIndex || num8 == maxBurrIndex;
+					string label = (!flag2 && num8 % num7 == 0) ? $"{detectResult.Name} P{num8 + 1} Δ={edgePointResult.DeltaValue:+0.0000;-0.0000;0.0000}mm" : null;
 					canvas.OverlayPoints.Add(new SolidPoint
 					{
 						Center = edgePointResult.Point,
 						Radius = (flag2 ? 4 : 3),
 						Color = color2,
-						Label = label
+						Label = label,
+						LabelPriority = 10
 					});
 				}
-				if (detectResult.JudgeLine != null && detectResult.JudgeLine.Success)
+				if (detectResult.HasOverallDistance)
 				{
-					if (detectResult.HasOverallDistance)
-					{
-						DrawOverallDistance(detectResult);
-						continue;
-					}
-					DrawPerpForIndex(detectResult, num4, "MAX", Color.Magenta, detectResult.JudgeLine.P1, detectResult.JudgeLine.P2);
-					DrawPerpForIndex(detectResult, num5, "MIN", Color.Orange, detectResult.JudgeLine.P1, detectResult.JudgeLine.P2);
+					DrawOverallDistance(detectResult);
+				}
+				if (detectResult.FittedLine != null && detectResult.FittedLine.Success)
+				{
+					Color maxBurrColor = (maxBurrIndex >= 0 && detectResult.Points[maxBurrIndex].IsBurr) ? Color.Red : Color.Orange;
+					Color maxDentColor = (maxDentIndex >= 0 && detectResult.Points[maxDentIndex].IsDent) ? Color.Red : Color.Gold;
+					DrawLocalExtreme(detectResult, maxBurrIndex, "最大毛刺", maxBurrColor);
+					DrawLocalExtreme(detectResult, maxDentIndex, "最大凹陷", maxDentColor);
 				}
 			}
 			canvas.Invalidate();
@@ -2757,7 +3033,7 @@ namespace EdgeAlignInspect
 					Center = overallMeasurePoint,
 					Radius = 5f,
 					Color = Color.DeepSkyBlue,
-					Label = dr.Name + " 整体测量点"
+					Label = null
 				});
 				canvas.OverlayLines.Add(new ColoredPolyline
 				{
@@ -2772,18 +3048,24 @@ namespace EdgeAlignInspect
 					Center = center,
 					Radius = 0f,
 					Color = Color.DeepSkyBlue,
-					Label = $"{dr.Name} 整体={dr.OverallDistanceValue:0.0000}mm Δ={dr.OverallDeltaValue:+0.0000;-0.0000;0.0000}mm"
+					Label = $"{dr.Name} 整体={dr.OverallDistanceValue:0.0000}mm Δ={dr.OverallDeltaValue:+0.0000;-0.0000;0.0000}mm",
+					LabelPriority = 110
 				});
 			}
 		}
 
-		private void DrawPerpForIndex(DetectRoiInspectResult dr, int idx, string tag, Color lineColor, PointF a, PointF b)
+		private void DrawLocalExtreme(DetectRoiInspectResult dr, int idx, string tag, Color lineColor)
 		{
 			if (dr != null && idx >= 0 && idx < dr.Points.Count)
 			{
+				EdgeLineFit judgeLine = (dr.UseReferenceLine && dr.JudgeLine != null && dr.JudgeLine.Success) ? dr.JudgeLine : dr.FittedLine;
+				if (judgeLine == null || !judgeLine.Success)
+				{
+					return;
+				}
 				EdgePointResult edgePointResult = dr.Points[idx];
 				PointF point = edgePointResult.Point;
-				PointF item = ProjectPointToLine(point, a, b);
+				PointF item = ProjectPointToLine(point, judgeLine.P1, judgeLine.P2);
 				canvas.OverlayLines.Add(new ColoredPolyline
 				{
 					Color = lineColor,
@@ -2797,9 +3079,8 @@ namespace EdgeAlignInspect
 					Center = center,
 					Radius = 0f,
 					Color = lineColor,
-					Label = dr.UseReferenceLine
-						? $"{dr.Name} {tag} 局部={edgePointResult.DeltaValue:+0.0000;-0.0000;0.0000}mm"
-						: $"{dr.Name} {tag} {edgePointResult.SignedDistanceValue:0.0000}mm"
+					Label = $"{dr.Name} {tag}={Math.Abs(edgePointResult.DeltaValue):0.0000}mm",
+					LabelPriority = 110
 				});
 			}
 		}
@@ -2826,7 +3107,8 @@ namespace EdgeAlignInspect
 					Center = circle.Center,
 					Radius = 4f,
 					Color = color,
-					Label = label
+					Label = label,
+					LabelPriority = 80
 				});
 			}
 		}
@@ -2895,7 +3177,8 @@ namespace EdgeAlignInspect
 				Center = center,
 				Radius = 4.5f,
 				Color = Color.Magenta,
-				Label = $"模板中心 score={r.TemplateMatchScore:0.000}"
+				Label = $"模板中心 score={r.TemplateMatchScore:0.000}",
+				LabelPriority = 80
 			});
 		}
 
@@ -2953,85 +3236,44 @@ namespace EdgeAlignInspect
 			return new PointF(a.X + num4 * num, a.Y + num4 * num2);
 		}
 
-		private static bool TryGetLineAcrossImage(PointF a, PointF b, int imgW, int imgH, out PointF p1, out PointF p2)
+		private static bool TryGetLocalFitSegment(EdgeLineFit line, RotRectF roi, out PointF p1, out PointF p2)
 		{
 			p1 = (p2 = PointF.Empty);
-			float num = b.X - a.X;
-			float num2 = b.Y - a.Y;
-			if (Math.Abs(num) < 1E-09f && Math.Abs(num2) < 1E-09f)
+			if (line == null || !line.Success)
 			{
 				return false;
 			}
-			float num3 = 0f;
-			float num4 = imgW - 1;
-			float num5 = 0f;
-			float num6 = imgH - 1;
-			List<PointF> list = new List<PointF>(4);
-			if (Math.Abs(num) > 1E-09f)
-			{
-				float num7 = (num3 - a.X) / num;
-				float num8 = a.Y + num7 * num2;
-				if (num8 >= num5 && num8 <= num6)
-				{
-					list.Add(new PointF(num3, num8));
-				}
-				float num9 = (num4 - a.X) / num;
-				float num10 = a.Y + num9 * num2;
-				if (num10 >= num5 && num10 <= num6)
-				{
-					list.Add(new PointF(num4, num10));
-				}
-			}
-			if (Math.Abs(num2) > 1E-09f)
-			{
-				float num11 = (num5 - a.Y) / num2;
-				float num12 = a.X + num11 * num;
-				if (num12 >= num3 && num12 <= num4)
-				{
-					list.Add(new PointF(num12, num5));
-				}
-				float num13 = (num6 - a.Y) / num2;
-				float num14 = a.X + num13 * num;
-				if (num14 >= num3 && num14 <= num4)
-				{
-					list.Add(new PointF(num14, num6));
-				}
-			}
-			for (int num15 = list.Count - 1; num15 >= 0; num15--)
-			{
-				for (int i = 0; i < num15; i++)
-				{
-					if (Math.Abs(list[num15].X - list[i].X) < 0.5f && Math.Abs(list[num15].Y - list[i].Y) < 0.5f)
-					{
-						list.RemoveAt(num15);
-						break;
-					}
-				}
-			}
-			if (list.Count < 2)
+			double dx = line.P2.X - line.P1.X;
+			double dy = line.P2.Y - line.P1.Y;
+			double length = Math.Sqrt(dx * dx + dy * dy);
+			if (length < 1E-09)
 			{
 				return false;
 			}
-			float num16 = -1f;
-			PointF pointF = list[0];
-			PointF pointF2 = list[1];
-			for (int j = 0; j < list.Count; j++)
+			dx /= length;
+			dy /= length;
+			List<PointF> measurePoints = line.MeasurePoints?.Where((PointF x) => !float.IsNaN(x.X) && !float.IsNaN(x.Y)).ToList() ?? new List<PointF>();
+			if (measurePoints.Count >= 2)
 			{
-				for (int k = j + 1; k < list.Count; k++)
+				double min = double.PositiveInfinity;
+				double max = double.NegativeInfinity;
+				foreach (PointF point in measurePoints)
 				{
-					float num17 = list[k].X - list[j].X;
-					float num18 = list[k].Y - list[j].Y;
-					float num19 = num17 * num17 + num18 * num18;
-					if (num19 > num16)
-					{
-						num16 = num19;
-						pointF = list[j];
-						pointF2 = list[k];
-					}
+					double projection = (point.X - line.P1.X) * dx + (point.Y - line.P1.Y) * dy;
+					min = Math.Min(min, projection);
+					max = Math.Max(max, projection);
 				}
+				double padding = Math.Max(4.0, Math.Min(12.0, (max - min) * 0.08));
+				min -= padding;
+				max += padding;
+				p1 = new PointF((float)(line.P1.X + min * dx), (float)(line.P1.Y + min * dy));
+				p2 = new PointF((float)(line.P1.X + max * dx), (float)(line.P1.Y + max * dy));
+				return true;
 			}
-			p1 = pointF;
-			p2 = pointF2;
+			PointF center = ProjectPointToLine(roi.Center, line.P1, line.P2);
+			double halfLength = Math.Max(10.0, Math.Max(roi.HalfLen1, roi.HalfLen2));
+			p1 = new PointF((float)(center.X - dx * halfLength), (float)(center.Y - dy * halfLength));
+			p2 = new PointF((float)(center.X + dx * halfLength), (float)(center.Y + dy * halfLength));
 			return true;
 		}
 
@@ -3137,7 +3379,9 @@ namespace EdgeAlignInspect
 			this.numDetMeasures = new System.Windows.Forms.NumericUpDown();
 			this.numDetSigma = new System.Windows.Forms.NumericUpDown();
 			this.numDetTh = new System.Windows.Forms.NumericUpDown();
+			this.numDetFitRatio = new System.Windows.Forms.NumericUpDown();
 			this.chkEnableMatch = new System.Windows.Forms.CheckBox();
+			this.chkEnableSearchRoi = new System.Windows.Forms.CheckBox();
 			this.numMatchMinScore = new System.Windows.Forms.NumericUpDown();
 			this.numMatchAngleStart = new System.Windows.Forms.NumericUpDown();
 			this.numMatchAngleExtent = new System.Windows.Forms.NumericUpDown();
@@ -3162,6 +3406,7 @@ namespace EdgeAlignInspect
 			((System.ComponentModel.ISupportInitialize)this.numDetMeasures).BeginInit();
 			((System.ComponentModel.ISupportInitialize)this.numDetSigma).BeginInit();
 			((System.ComponentModel.ISupportInitialize)this.numDetTh).BeginInit();
+			((System.ComponentModel.ISupportInitialize)this.numDetFitRatio).BeginInit();
 			((System.ComponentModel.ISupportInitialize)this.numMatchMinScore).BeginInit();
 			((System.ComponentModel.ISupportInitialize)this.numMatchAngleStart).BeginInit();
 			((System.ComponentModel.ISupportInitialize)this.numMatchAngleExtent).BeginInit();
@@ -3270,6 +3515,12 @@ namespace EdgeAlignInspect
 			this.chkEnableMatch.SetBounds(num4 + 82, num9, 128, num);
 			this.grpParams.Controls.Add(this.chkEnableMatch);
 			num9 += num + num2;
+			this.chkEnableSearchRoi.Text = "启用模板搜索区域";
+			this.chkEnableSearchRoi.Checked = true;
+			this.chkEnableSearchRoi.AutoSize = false;
+			this.chkEnableSearchRoi.SetBounds(num4, num9, num5, num);
+			this.grpParams.Controls.Add(this.chkEnableSearchRoi);
+			num9 += num + num2;
 			EdgeAlignInspect.Form1.AddLabel(this.grpParams, "最小分数", num4, num9, 72, num);
 			EdgeAlignInspect.Form1.SetupNum(this.numMatchMinScore, 0.00m, 1.00m, 2, 0.50m, num4 + 82, num9, 128, num);
 			this.grpParams.Controls.Add(this.numMatchMinScore);
@@ -3315,8 +3566,11 @@ namespace EdgeAlignInspect
 			this.grpParams.Controls.Add(this.numDetTh);
 			num10 += num + num2;
 			EdgeAlignInspect.Form1.AddMiniLabel(this.grpParams, "圆外扩", num6, num10, 42);
-			EdgeAlignInspect.Form1.SetupNum(this.numBaseOutward, 0m, 2000m, 1, 6.0m, num6 + 44, num10, 74, num);
+			EdgeAlignInspect.Form1.SetupNum(this.numBaseOutward, 0m, 2000m, 1, 6.0m, num6 + 44, num10, 52, num);
 			this.grpParams.Controls.Add(this.numBaseOutward);
+			EdgeAlignInspect.Form1.AddMiniLabel(this.grpParams, "正常点占比", num6 + 100, num10, 72);
+			EdgeAlignInspect.Form1.SetupNum(this.numDetFitRatio, 10m, 100m, 0, 60m, num6 + 172, num10, 44, num);
+			this.grpParams.Controls.Add(this.numDetFitRatio);
 			this.cardResult.SetBounds(8, 658, 476, 110);
 			this.cardResult.BackColor = System.Drawing.Color.White;
 			this.cardResult.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
@@ -3361,6 +3615,7 @@ namespace EdgeAlignInspect
 			((System.ComponentModel.ISupportInitialize)this.numDetMeasures).EndInit();
 			((System.ComponentModel.ISupportInitialize)this.numDetSigma).EndInit();
 			((System.ComponentModel.ISupportInitialize)this.numDetTh).EndInit();
+			((System.ComponentModel.ISupportInitialize)this.numDetFitRatio).EndInit();
 			((System.ComponentModel.ISupportInitialize)this.numMatchMinScore).EndInit();
 			((System.ComponentModel.ISupportInitialize)this.numMatchAngleStart).EndInit();
 			((System.ComponentModel.ISupportInitialize)this.numMatchAngleExtent).EndInit();

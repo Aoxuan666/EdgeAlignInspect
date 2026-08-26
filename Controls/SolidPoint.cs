@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 
 namespace EdgeAlignInspect
 {
@@ -11,5 +11,7 @@ namespace EdgeAlignInspect
 		public Color Color;
 
 		public string Label;
+
+		public int LabelPriority;
 	}
 }

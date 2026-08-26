@@ -11,6 +11,8 @@
 			EdgeInspectJob edgeInspectJob = new EdgeInspectJob
 			{
 				TemplateRoi = src.TemplateRoi,
+				TemplateSearchRoi = src.TemplateSearchRoi,
+				UseTemplateSearchRoi = src.UseTemplateSearchRoi,
 				Language = src.Language,
 				UseReferenceLine = src.UseReferenceLine,
 				DetectMode = src.DetectMode,

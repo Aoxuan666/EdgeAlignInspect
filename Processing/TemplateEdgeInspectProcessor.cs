@@ -22,6 +22,8 @@ namespace EdgeAlignInspect
 
 		public RotRectF TemplateRoiCur { get; set; }
 
+		public RotRectF TemplateSearchRoiCur { get; set; }
+
 		public List<PointF> MatchContourPoints { get; set; } = new List<PointF>();
 
 		public string Message { get; set; }
@@ -1149,14 +1151,12 @@ namespace EdgeAlignInspect
 			}
 			return result;
 		}
-
 		private static List<TemplateEraseStroke> CloneEraseStrokes(IEnumerable<TemplateEraseStroke> strokes)
 		{
 			return strokes == null
 				? new List<TemplateEraseStroke>()
 				: strokes.Select(x => x?.DeepClone() ?? new TemplateEraseStroke()).ToList();
 		}
-
 		private static void SetXldModelOriginToTemplateRoiCenter(HTuple modelID, IList<PointF> featurePoints, RotRectF templateRoi)
 		{
 			if (modelID == null || modelID.Length <= 0 || featurePoints == null || templateRoi.IsEmpty)
@@ -1189,6 +1189,33 @@ namespace EdgeAlignInspect
 			HOperatorSet.SetShapeModelOrigin(modelID, templateRoi.Center.Y - defaultOriginRow, templateRoi.Center.X - defaultOriginCol);
 		}
 
+		private static void FindTemplateMatch(HObject image, HTuple modelID, EdgeInspectJob job, out HTuple row, out HTuple column, out HTuple angle, out HTuple score)
+		{
+			HObject searchRegion = null;
+			HObject reducedImage = null;
+			try
+			{
+				HObject imageForMatch = image;
+				if (job != null && job.UseTemplateSearchRoi && IsUsableSearchRoi(job.TemplateSearchRoi))
+				{
+					GenRectangle2(job.TemplateSearchRoi, out searchRegion);
+					HOperatorSet.ReduceDomain(image, searchRegion, out reducedImage);
+					imageForMatch = reducedImage;
+				}
+				HOperatorSet.FindShapeModel(imageForMatch, modelID, job.Match.AngleStart, job.Match.AngleExtent, job.Match.MinScore, 1, 0.3, "least_squares", 0, 0.75, out row, out column, out angle, out score);
+			}
+			finally
+			{
+				reducedImage?.Dispose();
+				searchRegion?.Dispose();
+			}
+		}
+
+		private static bool IsUsableSearchRoi(RotRectF roi)
+		{
+			return !roi.IsEmpty && !float.IsNaN(roi.Cx) && !float.IsNaN(roi.Cy) && !float.IsNaN(roi.Phi) && !float.IsNaN(roi.HalfLen1) && !float.IsNaN(roi.HalfLen2) && !float.IsInfinity(roi.Cx) && !float.IsInfinity(roi.Cy) && !float.IsInfinity(roi.Phi) && !float.IsInfinity(roi.HalfLen1) && !float.IsInfinity(roi.HalfLen2);
+		}
+
 		public TemplateMatchQuickTestResult TestTemplateMatch(Bitmap curBmp, EdgeInspectJob job)
 		{
 			if (curBmp == null)
@@ -1213,7 +1240,7 @@ namespace EdgeAlignInspect
 				hImage = BitmapToGrayHImage(curBmp, out var _, out var _, out var _, out grayHandle);
 				modelID = ImportShapeModelFromBytes(job.TeachData.ModelBytes);
 				SetXldModelOriginToTemplateRoiCenter(modelID, job.TeachData.FeaturePoints, job.TemplateRoi);
-				HOperatorSet.FindShapeModel(hImage, modelID, job.Match.AngleStart, job.Match.AngleExtent, job.Match.MinScore, 1, 0.3, "least_squares", 0, 0.75, out var row, out var column, out var angle, out var score);
+				FindTemplateMatch(hImage, modelID, job, out var row, out var column, out var angle, out var score);
 				if (score.Length < 1)
 				{
 					return new TemplateMatchQuickTestResult
@@ -1231,6 +1258,9 @@ namespace EdgeAlignInspect
 					Col = column[0].D,
 					Angle = angle[0].D,
 					TemplateRoiCur = TransformRotRect(job.TemplateRoi, homMat2D),
+					// Search ROI stays in the current image coordinate system.
+					// The template and detection ROIs are the ones that follow the match transform.
+					TemplateSearchRoiCur = job.Match.Enabled && job.UseTemplateSearchRoi ? job.TemplateSearchRoi : default(RotRectF),
 					MatchContourPoints = TransformPoints(job.TeachData.FeaturePoints, homMat2D),
 					Message = LocalizedText.Message($"匹配成功，分数={score[0].D:F3}", job.Language)
 				};
@@ -1254,7 +1284,6 @@ namespace EdgeAlignInspect
 				}
 			}
 		}
-
 		public EdgeInspectResult Inspect(Bitmap curBmp, EdgeInspectJob job)
 		{
 			if (curBmp == null)
@@ -1285,6 +1314,7 @@ namespace EdgeAlignInspect
 				TemplateMatchEnabled = job.Match.Enabled,
 				TemplateMatchOk = !job.Match.Enabled,
 				TemplateRoiCur = job.TemplateRoi,
+				TemplateSearchRoiCur = job.Match.Enabled && job.UseTemplateSearchRoi ? job.TemplateSearchRoi : default(RotRectF),
 				UseReferenceLine = (requiresAnyBaseRoi && !hasAnySelfJudgeDetect),
 				HasReferenceLineItems = requiresAnyBaseRoi,
 				HasSelfFitLineItems = hasAnySelfJudgeDetect,
@@ -1308,15 +1338,15 @@ namespace EdgeAlignInspect
 				{
 					hTuple = ImportShapeModelFromBytes(job.TeachData.ModelBytes);
 					SetXldModelOriginToTemplateRoiCenter(hTuple, job.TeachData.FeaturePoints, job.TemplateRoi);
-					HOperatorSet.FindShapeModel(hImage, hTuple, job.Match.AngleStart, job.Match.AngleExtent, job.Match.MinScore, 1, 0.3, "least_squares", 0, 0.75, out var row, out var column, out var angle, out var score);
+					FindTemplateMatch(hImage, hTuple, job, out var row, out var column, out var angle, out var score);
 					if (score.Length < 1)
 					{
 						edgeInspectResult.TemplateMatchOk = false;
 						edgeInspectResult.Success = false;
 						edgeInspectResult.NgReasons |= NgReason.TemplateMatchFailed;
 						edgeInspectResult.FailedItems.Add("模板匹配失败");
-						edgeInspectResult.Message = "模板匹配失败";
 						LocalizedText.ApplyToResult(edgeInspectResult, job.Language);
+						edgeInspectResult.Message = BuildHostMessage(edgeInspectResult);
 						return edgeInspectResult;
 					}
 					edgeInspectResult.TemplateMatchOk = true;
@@ -1328,6 +1358,8 @@ namespace EdgeAlignInspect
 					HOperatorSet.VectorAngleToRigid(job.TeachData.RefRow, job.TeachData.RefCol, 0.0, row[0], column[0], angle[0], out homMat2D);
 					flag2 = true;
 					edgeInspectResult.TemplateRoiCur = TransformRotRect(job.TemplateRoi, homMat2D);
+					// Search ROI remains fixed in image coordinates after a successful match.
+					edgeInspectResult.TemplateSearchRoiCur = job.Match.Enabled && job.UseTemplateSearchRoi ? job.TemplateSearchRoi : default(RotRectF);
 					edgeInspectResult.TemplateMatchContourPoints.AddRange(TransformPoints(job.TeachData.FeaturePoints, homMat2D));
 				}
 				Dictionary<int, EdgeLineFit> dictionary = new Dictionary<int, EdgeLineFit>();
@@ -1339,7 +1371,7 @@ namespace EdgeAlignInspect
 					{
 						Name = $"基准{i + 1}"
 					};
-					RotRectF rotRectF = (flag2 && baseRoiItem.UseTemplateTransform ? TransformRotRect(baseRoiItem.Roi, homMat2D) : baseRoiItem.Roi);
+					RotRectF rotRectF = (flag2 ? TransformRotRect(baseRoiItem.Roi, homMat2D) : baseRoiItem.Roi);
 					CaliperParameters caliperParameters = (baseRoiItem.Caliper ?? job.ResolveBaseCaliper(i) ?? EdgeInspectJob.CreateDefaultBaseCaliper()).DeepClone();
 					BaseRoiInspectResult baseRoiInspectResult = new BaseRoiInspectResult
 					{
@@ -1355,7 +1387,7 @@ namespace EdgeAlignInspect
 					}
 					else
 					{
-						baseRoiInspectResult.Line = FitLineInRotRoi(hImage, w, h, rotRectF, caliperParameters);
+						baseRoiInspectResult.Line = FitLineInRotRoi(hImage, w, h, rotRectF, caliperParameters, useNormalRatioFit: false);
 						baseRoiInspectResult.Success = baseRoiInspectResult.Line != null && baseRoiInspectResult.Line.Success;
 						baseRoiInspectResult.Message = (baseRoiInspectResult.Success ? "OK" : AppendFailureDetail("基准线拟合失败", baseRoiInspectResult.Line));
 						if (baseRoiInspectResult.Success)
@@ -1371,14 +1403,14 @@ namespace EdgeAlignInspect
 					{
 						Name = $"圆基准{j + 1}"
 					};
-					CircleRoiF circleRoiF = (flag2 && circleBaseRoiItem.UseTemplateTransform ? TransformCircleRoi(circleBaseRoiItem.Circle1, homMat2D) : circleBaseRoiItem.Circle1);
-					CircleRoiF circleRoiF2 = (flag2 && circleBaseRoiItem.UseTemplateTransform ? TransformCircleRoi(circleBaseRoiItem.Circle2, homMat2D) : circleBaseRoiItem.Circle2);
+					CircleRoiF circleRoiF = (flag2 ? TransformCircleRoi(circleBaseRoiItem.Circle1, homMat2D) : circleBaseRoiItem.Circle1);
+					CircleRoiF circleRoiF2 = (flag2 ? TransformCircleRoi(circleBaseRoiItem.Circle2, homMat2D) : circleBaseRoiItem.Circle2);
 					CaliperParameters caliperParameters2 = (circleBaseRoiItem.Caliper ?? job.CircleCaliper ?? EdgeInspectJob.CreateDefaultCircleCaliper()).DeepClone();
 					CircleBaseRoiInspectResult circleBaseRoiInspectResult = new CircleBaseRoiInspectResult
 					{
 						Index = j,
 						Name = (string.IsNullOrWhiteSpace(circleBaseRoiItem.Name) ? $"圆基准{j + 1}" : circleBaseRoiItem.Name),
-						Circle1RoiCur = circleRoiF,
+						Circle1RoiCur = circleRoiF,  
 						Circle2RoiCur = circleRoiF2,
 						CaliperUsed = caliperParameters2.DeepClone()
 					};
@@ -1415,7 +1447,7 @@ namespace EdgeAlignInspect
 					{
 						Name = $"圆点基准{k + 1}"
 					};
-					CircleRoiF circleRoiF3 = (flag2 && circlePointRoiItem.UseTemplateTransform ? TransformCircleRoi(circlePointRoiItem.Circle, homMat2D) : circlePointRoiItem.Circle);
+					CircleRoiF circleRoiF3 = (flag2 ? TransformCircleRoi(circlePointRoiItem.Circle, homMat2D) : circlePointRoiItem.Circle);
 					CaliperParameters caliperParameters3 = (circlePointRoiItem.Caliper ?? job.CircleCaliper ?? EdgeInspectJob.CreateDefaultCircleCaliper()).DeepClone();
 					CirclePointRoiInspectResult circlePointRoiInspectResult = new CirclePointRoiInspectResult
 					{
@@ -1460,7 +1492,7 @@ namespace EdgeAlignInspect
 						continue;
 					}
 					num++;
-					RotRectF rotRectF2 = (flag2 && detectRoiItem.UseTemplateTransform ? TransformRotRect(detectRoiItem.Roi, homMat2D) : detectRoiItem.Roi);
+					RotRectF rotRectF2 = (flag2 ? TransformRotRect(detectRoiItem.Roi, homMat2D) : detectRoiItem.Roi);
 					CaliperParameters caliperParameters4 = (detectRoiItem.Caliper ?? job.ResolveDetectCaliper(l) ?? EdgeInspectJob.CreateDefaultDetectCaliper()).DeepClone();
 					int num2 = job.ResolveBaseRoiIndex(detectRoiItem.BaseRoiId, detectRoiItem.BaseRoiIndex);
 					int num3 = job.ResolveCircleBaseRoiIndex(detectRoiItem.CircleBaseRoiId, detectRoiItem.CircleBaseRoiIndex);
@@ -1497,7 +1529,7 @@ namespace EdgeAlignInspect
 						AddDetectFailure(edgeInspectResult, detectRoiInspectResult, "检测ROI为空");
 						continue;
 					}
-					detectRoiInspectResult.FittedLine = FitLineInRotRoi(hImage, w, h, rotRectF2, caliperParameters4);
+					detectRoiInspectResult.FittedLine = FitLineInRotRoi(hImage, w, h, rotRectF2, caliperParameters4, useNormalRatioFit: true);
 					if (detectRoiInspectResult.FittedLine == null || !detectRoiInspectResult.FittedLine.Success || detectRoiInspectResult.FittedLine.MeasurePoints.Count == 0)
 					{
 						AddDetectFailure(edgeInspectResult, detectRoiInspectResult, AppendFailureDetail("检测ROI拟合失败（检查：ROI/卡尺参数/极性）", detectRoiInspectResult.FittedLine));
@@ -1546,7 +1578,7 @@ namespace EdgeAlignInspect
 						detectRoiInspectResult.JudgeLine = CopyLine(detectRoiInspectResult.FittedLine);
 					}
 					ComputeAngleReference(detectRoiInspectResult, dictionary, dictionary2);
-					EvaluateDetectItem(detectRoiInspectResult, rotRectF2, job.DetectMode, useReferenceLine: false);
+					EvaluateDetectItem(detectRoiInspectResult, rotRectF2, job.DetectMode, useReferenceLine: detectRoiInspectResult.UseReferenceLine);
 					if (edgeLineFit != null && edgeLineFit.Success)
 					{
 						if (pointF.HasValue)
@@ -1606,12 +1638,8 @@ namespace EdgeAlignInspect
 				{
 					edgeInspectResult.NgReasons = NgReason.DetectRoiFailed;
 				}
-				string detectModeText = GetDetectModeText(job.DetectMode);
-				string judgeModeText = GetJudgeModeText(edgeInspectResult.HasReferenceLineItems, edgeInspectResult.HasSelfFitLineItems);
-				string text2 = (flag ? $" | 外部允差(mm)：毛刺={job.ExternalBurrTolerance:F4} 凹陷={job.ExternalDentTolerance:F4} 超边={job.ExternalOverEdgeTolerance:F4} 漏铜={job.ExternalCopperLeakTolerance:F4} | 解析度X={job.PixelResolutionX:F6}mm/px | 解析度Y={job.PixelResolutionY:F6}mm/px | 最大偏差={edgeInspectResult.MaxPositiveDeltaValue:F4}mm" : $" | 本地毛刺允差={edgeInspectResult.BurrTolerance:F2}px | 本地凹陷允差={edgeInspectResult.DentTolerance:F2}px | 最大偏差={edgeInspectResult.MaxPositiveDeltaPx:F2}px");
-				string text3 = ((edgeInspectResult.FailedItems.Count > 0) ? (" | " + string.Join("；", edgeInspectResult.FailedItems.Take(6))) : "");
-				edgeInspectResult.Message = (edgeInspectResult.Success ? $"OK | 模式={detectModeText} | 判定={judgeModeText} | 检测ROI={num}{text2} | 局部Δ(min/max/mean)={edgeInspectResult.DeltaMin:F2}/{edgeInspectResult.DeltaMax:F2}/{edgeInspectResult.DeltaMean:F2}px" : $"NG | 原因={edgeInspectResult.NgReasonText} | 模式={detectModeText} | 判定={judgeModeText} | 检测ROI={num} | 失败项={edgeInspectResult.DetectResults.Count((DetectRoiInspectResult x) => !x.Success)} | 毛刺={edgeInspectResult.BurrCount} 凹陷={edgeInspectResult.DentCount} 超边={edgeInspectResult.OverEdgeCount} 漏铜={edgeInspectResult.CopperLeakCount}{text2} | 局部Δ(min/max/mean)={edgeInspectResult.DeltaMin:F2}/{edgeInspectResult.DeltaMax:F2}/{edgeInspectResult.DeltaMean:F2}px{text3}");
 				LocalizedText.ApplyToResult(edgeInspectResult, job.Language);
+				edgeInspectResult.Message = BuildHostMessage(edgeInspectResult);
 				return edgeInspectResult;
 			}
 			finally
@@ -1633,11 +1661,61 @@ namespace EdgeAlignInspect
 				}
 			}
 		}
-
 		public void Dispose()
 		{
 		}
-
+		private static string BuildHostMessage(EdgeInspectResult result)
+		{
+			if (result == null)
+			{
+				return "总体=NG,毛刺公差=0.0000,凹陷公差=0.0000";
+			}
+			bool useValue = result.UseExternalBurrTolerance;
+			string unit = useValue ? "mm" : "px";
+			double burrTolerance = useValue ? result.ExternalBurrTolerance : result.BurrTolerance;
+			double dentTolerance = useValue ? result.ExternalDentTolerance : result.DentTolerance;
+			List<string> parts = new List<string>
+			{
+				$"总体={(result.Success ? "OK" : "NG")},毛刺公差={burrTolerance:F4}{unit},凹陷公差={dentTolerance:F4}{unit}"
+			};
+			foreach (DetectRoiInspectResult dr in result.DetectResults.Where((DetectRoiInspectResult x) => x != null))
+			{
+				double maxBurr;
+				double maxDent;
+				GetMaxBurrDent(dr, useValue, out maxBurr, out maxDent);
+				string roiName = string.IsNullOrWhiteSpace(dr.Name) ? $"检测{dr.Index + 1}" : dr.Name;
+				parts.Add($"{roiName}={(dr.Success ? "OK" : "NG")},最大凹陷={maxBurr:F4}{unit},最大凹陷={maxDent:F4}{unit}");
+			}
+			return string.Join(";", parts);
+		}
+		private static void GetMaxBurrDent(DetectRoiInspectResult dr, bool useValue, out double maxBurr, out double maxDent)
+		{
+			maxBurr = 0.0;
+			maxDent = 0.0;
+			if (dr == null)
+			{
+				return;
+			}
+			foreach (EdgePointResult point in dr.Points.Where((EdgePointResult x) => x != null))
+			{
+				AddDeltaToMax(useValue ? point.DeltaValue : point.DeltaPx, ref maxBurr, ref maxDent);
+			}
+			if (dr.HasOverallDistance)
+			{
+				AddDeltaToMax(useValue ? dr.OverallDeltaValue : dr.OverallDeltaPx, ref maxBurr, ref maxDent);
+			}
+		}
+		private static void AddDeltaToMax(double delta, ref double maxBurr, ref double maxDent)
+		{
+			if (delta < 0.0)
+			{
+				maxBurr = Math.Max(maxBurr, Math.Abs(delta));
+			}
+			else if (delta > 0.0)
+			{
+				maxDent = Math.Max(maxDent, delta);
+			}
+		}
 		private static void AddDetectFailure(EdgeInspectResult res, DetectRoiInspectResult dr, string message)
 		{
 			if (dr != null)
@@ -1651,7 +1729,6 @@ namespace EdgeAlignInspect
 				res.FailedItems.Add(text + ": " + dr.Message);
 			}
 		}
-
 		private static NgReason ResolveFailureReason(string message)
 		{
 			if (string.IsNullOrWhiteSpace(message))
@@ -1668,20 +1745,6 @@ namespace EdgeAlignInspect
 			}
 			return NgReason.DetectRoiFailed;
 		}
-
-		private static string GetJudgeModeText(bool hasReferenceLineItems, bool hasSelfFitItems)
-		{
-			if (hasReferenceLineItems && hasSelfFitItems)
-			{
-				return "混合判定";
-			}
-			if (hasReferenceLineItems)
-			{
-				return "基准线判定";
-			}
-			return "自拟合线判定";
-		}
-
 		private static string AppendFailureDetail(string message, EdgeLineFit fit)
 		{
 			if (fit == null || string.IsNullOrWhiteSpace(fit.Message))
@@ -1690,7 +1753,6 @@ namespace EdgeAlignInspect
 			}
 			return message + "：" + fit.Message;
 		}
-
 		private static string AppendFailureDetail(string message, EdgeCircleFit fit)
 		{
 			if (fit == null || string.IsNullOrWhiteSpace(fit.Message))
@@ -1699,14 +1761,14 @@ namespace EdgeAlignInspect
 			}
 			return message + "：" + fit.Message;
 		}
-
 		private static void EvaluateDetectItem(DetectRoiInspectResult dr, RotRectF detRoi, DefectDetectMode mode, bool useReferenceLine)
 		{
 			if (dr == null)
 			{
 				return;
 			}
-			if (dr.JudgeLine == null || !dr.JudgeLine.Success)
+			EdgeLineFit distanceLine = useReferenceLine ? dr.JudgeLine : dr.FittedLine;
+			if (distanceLine == null || !distanceLine.Success)
 			{
 				dr.Success = false;
 				dr.Message = "判定线无效";
@@ -1718,8 +1780,9 @@ namespace EdgeAlignInspect
 				dr.Message = "未取得检测点";
 				return;
 			}
-			EdgeLineFit distanceLine = dr.FittedLine;
+			bool useReferenceJudgeLine = useReferenceLine;
 			SignedLine signedLine = SignedLine.FromLine(distanceLine.P1, distanceLine.P2);
+			double nominalDistancePx = useReferenceJudgeLine ? dr.NominalDistancePx : 0.0;
 			bool flag = mode == DefectDetectMode.Both || mode == DefectDetectMode.BurrOnly;
 			bool flag2 = mode == DefectDetectMode.Both || mode == DefectDetectMode.DentOnly;
 			bool flag3 = dr.UseExternalBurrTolerance && dr.ExternalBurrTolerance >= 0.0 && dr.PixelResolutionX > 0.0 && dr.PixelResolutionY > 0.0;
@@ -1736,7 +1799,7 @@ namespace EdgeAlignInspect
 				PointF pointF = dr.FittedLine.MeasurePoints[i];
 				double num8 = signedLine.SignedDistance(pointF);
 				double num9 = num8 * num7;
-				double num10 = num9;
+				double num10 = num9 - nominalDistancePx;
 				double signedDistanceValue = num9 * physicalDistancePerPixel;
 				double num11 = num10 * physicalDistancePerPixel;
 				bool flag4 = flag3 ? (flag && num11 < 0.0 - dr.ExternalBurrTolerance) : (flag && num10 < 0.0 - dr.BurrTolerancePx);
@@ -1812,9 +1875,9 @@ namespace EdgeAlignInspect
 				break;
 			}
 			string text = (string)obj;
-			string text2 = "自拟合线局部判定";
+			string text2 = useReferenceJudgeLine ? "基准线局部判定" : "自拟合线局部判定";
 			string text3 = (double.IsNaN(dr.AngleDeltaDeg) ? "角差=N/A" : $"角差={dr.AngleDeltaDeg:F3}°");
-			string text4 = (flag3 ? $"外部允差(mm)：毛刺={dr.ExternalBurrTolerance:F4} 凹陷={dr.ExternalDentTolerance:F4} | 解析度X={dr.PixelResolutionX:F6}mm/px | 解析度Y={dr.PixelResolutionY:F6}mm/px | 最大毛刺={dr.MaxPositiveDeltaValue:F4}mm" : $"本地毛刺允差={dr.BurrTolerancePx:F2}px | 本地凹陷允差={dr.DentTolerancePx:F2}px | 最大毛刺={dr.MaxPositiveDeltaPx:F2}px");
+			string text4 = (flag3 ? $"外部允差(mm)：毛刺={dr.ExternalBurrTolerance:F4} 凹陷={dr.ExternalDentTolerance:F4} | 解析度X={dr.PixelResolutionX:F6}mm/px | 解析度Y={dr.PixelResolutionY:F6}mm/px | 最大凹陷={dr.MaxPositiveDeltaValue:F4}mm" : $"本地毛刺允差={dr.BurrTolerancePx:F2}px | 本地凹陷允差={dr.DentTolerancePx:F2}px | 最大凹陷={dr.MaxPositiveDeltaPx:F2}px");
 			dr.Message = (dr.Success ? $"OK | {text2} | 模式={text} | {text4} | {text3} | 局部Δ(min/max/mean)={dr.DeltaMin:F2}/{dr.DeltaMax:F2}/{dr.DeltaMean:F2}px" : $"NG | {text2} | 模式={text} | {text4} | 毛刺={dr.BurrCount} 凹陷={dr.DentCount} | {text3} | 局部Δ(min/max/mean)={dr.DeltaMin:F2}/{dr.DeltaMax:F2}/{dr.DeltaMean:F2}px");
 		}
 
@@ -1832,7 +1895,6 @@ namespace EdgeAlignInspect
 			PointF measurePoint = new PointF((dr.FittedLine.P1.X + dr.FittedLine.P2.X) * 0.5f, (dr.FittedLine.P1.Y + dr.FittedLine.P2.Y) * 0.5f);
 			EvaluateOverallDistance(dr, referenceLine, measurePoint);
 		}
-
 		private static void EvaluateOverallDistanceFromMeasurePoints(DetectRoiInspectResult dr, EdgeLineFit referenceLine)
 		{
 			if (dr == null || dr.FittedLine == null || dr.FittedLine.MeasurePoints == null || dr.FittedLine.MeasurePoints.Count == 0 || referenceLine == null || !referenceLine.Success)
@@ -1848,23 +1910,19 @@ namespace EdgeAlignInspect
 			}
 			list.Sort((Tuple<double, PointF> a, Tuple<double, PointF> b) => a.Item1.CompareTo(b.Item1));
 			int num = list.Count / 2;
-			double value;
 			PointF measurePoint;
 			if (list.Count % 2 == 0 && list.Count > 1)
 			{
 				Tuple<double, PointF> tuple = list[num - 1];
 				Tuple<double, PointF> tuple2 = list[num];
-				value = (tuple.Item1 + tuple2.Item1) * 0.5;
 				measurePoint = new PointF((tuple.Item2.X + tuple2.Item2.X) * 0.5f, (tuple.Item2.Y + tuple2.Item2.Y) * 0.5f);
 			}
 			else
 			{
-				value = list[num].Item1;
 				measurePoint = list[num].Item2;
 			}
-			EvaluateOverallDistance(dr, referenceLine, measurePoint, value);
+			EvaluateOverallDistance(dr, referenceLine, measurePoint);
 		}
-
 		private static void EvaluateOverallDistance(DetectRoiInspectResult dr, EdgeLineFit referenceLine, PointF measurePoint, double? measuredDistancePx)
 		{
 			if (dr != null && referenceLine != null && referenceLine.Success)
@@ -1872,15 +1930,19 @@ namespace EdgeAlignInspect
 				SignedLine signedLine = SignedLine.FromLine(referenceLine.P1, referenceLine.P2);
 				PointF pointF = ProjectPointToLine(measurePoint, referenceLine.P1, referenceLine.P2);
 				double value = signedLine.SignedDistance(measurePoint);
-				double num = (measuredDistancePx.HasValue ? measuredDistancePx.Value : Math.Abs(value));
+				// Resolve sign from the detection ROI arrow, independent of line endpoint order.
+				double directionScale = ResolvePositiveDirectionScale(dr.RoiCur, signedLine);
+				double signedDistancePx = value * directionScale;
+				double num = (measuredDistancePx.HasValue ? Math.Abs(measuredDistancePx.Value) : Math.Abs(signedDistancePx));
 				double physicalDistancePerPixel = GetPhysicalDistancePerPixel(signedLine, dr.PixelResolutionX, dr.PixelResolutionY);
 				double num2 = num * physicalDistancePerPixel;
 				double num5 = GetNominalDistanceValue(dr);
-				double num4 = num2 - num5;
-				double num3 = (physicalDistancePerPixel > 0.0) ? (num4 / physicalDistancePerPixel) : (num - dr.NominalDistancePx);
+				double num4 = signedDistancePx * physicalDistancePerPixel - num5;
+				double num3 = (physicalDistancePerPixel > 0.0) ? (num4 / physicalDistancePerPixel) : (signedDistancePx - dr.NominalDistancePx);
 				bool flag = dr.UseExternalBurrTolerance && dr.ExternalBurrTolerance >= 0.0 && dr.PixelResolutionX > 0.0 && dr.PixelResolutionY > 0.0;
-				bool flag2 = (flag ? (num4 > dr.ExternalOverEdgeTolerance) : (num3 > dr.BurrTolerancePx));
-				bool flag3 = (flag ? (num4 < 0.0 - dr.ExternalCopperLeakTolerance) : (num3 < 0.0 - dr.DentTolerancePx));
+				// Positive is arrow direction (dent/leak); negative is reverse (burr/over-edge).
+				bool flag2 = (flag ? (num4 < 0.0 - dr.ExternalOverEdgeTolerance) : (num3 < 0.0 - dr.BurrTolerancePx));
+				bool flag3 = (flag ? (num4 > dr.ExternalCopperLeakTolerance) : (num3 > dr.DentTolerancePx));
 				dr.OverallMeasurePoint = measurePoint;
 				dr.OverallFootPoint = pointF;
 				dr.OverallReferenceLine = CopyLine(referenceLine);
@@ -2163,7 +2225,6 @@ namespace EdgeAlignInspect
 				}
 			}
 		}
-
 		private static void GenRectangle2(RotRectF rr, out HObject rect2)
 		{
 			HOperatorSet.GenRectangle2(out rect2, rr.Center.Y, rr.Center.X, rr.AngleRad, rr.HalfLen1, rr.HalfLen2);
@@ -2182,7 +2243,6 @@ namespace EdgeAlignInspect
 			double num3 = Math.Atan2(qx2.D - qx.D, qy2.D - qy.D);
 			return new RotRectF(new PointF((float)qy.D, (float)qx.D), RotRectF.NormalizeAngle((float)num3), rr.HalfLen1, rr.HalfLen2);
 		}
-
 		private static CircleRoiF TransformCircleRoi(CircleRoiF circle, HTuple hom)
 		{
 			if (circle.IsEmpty)
@@ -2201,7 +2261,7 @@ namespace EdgeAlignInspect
 			p2 = new PtD((double)rr.Center.X + num, (double)rr.Center.Y + num2);
 		}
 
-		private static EdgeLineFit FitLineInRotRoi(HImage gray, int width, int height, RotRectF rr, CaliperParameters cp)
+		private static EdgeLineFit FitLineInRotRoi(HImage gray, int width, int height, RotRectF rr, CaliperParameters cp, bool useNormalRatioFit)
 		{
 			EdgeLineFit edgeLineFit = new EdgeLineFit
 			{
@@ -2230,10 +2290,19 @@ namespace EdgeAlignInspect
 					return edgeLineFit;
 				}
 				for (int i = 0; i < row.Length; i++)
-				{
+				{     
 					edgeLineFit.MeasurePoints.Add(new PointF((float)column[i].D, (float)row[i].D));
 				}
-				if (TryFitLineStable(row, column, width, height, out var r, out var c, out var r2, out var c2, out var angle, out var error))
+				double r;
+				double c;
+				double r2;
+				double c2;
+				double angle;
+				string error;
+				bool flag = useNormalRatioFit
+					? TryFitLineByNormalRatio(edgeLineFit.MeasurePoints, caliperParameters.LineFitNormalRatio, rr.AngleRad, width, height, out r, out c, out r2, out c2, out angle, out error)
+					: TryFitLineStable(row, column, width, height, out r, out c, out r2, out c2, out angle, out error);
+				if (flag)
 				{
 					edgeLineFit.P1 = new PointF((float)c, (float)r);
 					edgeLineFit.P2 = new PointF((float)c2, (float)r2);
@@ -2397,7 +2466,7 @@ namespace EdgeAlignInspect
 			}
 			row = edgeRows[num2].D;
 			col = edgeCols[num2].D;
-			return true;
+			return true;	
 		}
 
 		private static bool TryFitCircleStable(HTuple rows, HTuple cols, out double row, out double col, out double radius, out string error)
@@ -2539,6 +2608,11 @@ namespace EdgeAlignInspect
 				{
 					cp.SearchOutward = 0.0;
 				}
+				if (double.IsNaN(cp.LineFitNormalRatio) || double.IsInfinity(cp.LineFitNormalRatio) || cp.LineFitNormalRatio <= 0.0)
+				{
+					cp.LineFitNormalRatio = 0.60;
+				}
+				cp.LineFitNormalRatio = Math.Max(0.10, Math.Min(1.0, cp.LineFitNormalRatio));
 				if (string.IsNullOrWhiteSpace(cp.MeasureInterpolation))
 				{
 					cp.MeasureInterpolation = "bicubic";
@@ -2552,6 +2626,188 @@ namespace EdgeAlignInspect
 					cp.Transition = "negative";
 				}
 			}
+		}
+
+		private static bool TryFitLineByNormalRatio(IList<PointF> measurePoints, double normalRatio, double fallbackAngle, int width, int height, out double r1, out double c1, out double r2, out double c2, out double angle, out string error)
+		{
+			r1 = (c1 = (r2 = (c2 = (angle = 0.0))));
+			error = "";
+			List<PointF> list = ((measurePoints == null) ? new List<PointF>() : measurePoints.Where((PointF p) => !float.IsNaN(p.X) && !float.IsInfinity(p.X) && !float.IsNaN(p.Y) && !float.IsInfinity(p.Y)).ToList());
+			if (list.Count < 2)
+			{
+				error = "拟合点数量不足";
+				return false;
+			}
+			double num = normalRatio;
+			if (double.IsNaN(num) || double.IsInfinity(num) || num <= 0.0)
+			{
+				num = 0.60;
+			}
+			num = Math.Max(0.10, Math.Min(1.0, num));
+			int num2 = Math.Max(2, Math.Min(list.Count, (int)Math.Round((double)list.Count * num, MidpointRounding.AwayFromZero)));
+			int num3 = Math.Min(64, list.Count);
+			List<int> list2 = new List<int>(num3);
+			for (int i = 0; i < num3; i++)
+			{
+				int item = (num3 == 1) ? 0 : (int)Math.Round((double)i * (double)(list.Count - 1) / (double)(num3 - 1), MidpointRounding.AwayFromZero);
+				if (list2.Count == 0 || list2[list2.Count - 1] != item)
+				{
+					list2.Add(item);
+				}
+			}
+			double num4 = double.PositiveInfinity;
+			double num5 = -1.0;
+			double num6 = 0.0;
+			double num7 = 0.0;
+			double num8 = Math.Sin(fallbackAngle);
+			double num9 = Math.Cos(fallbackAngle);
+			for (int j = 0; j < list2.Count; j++)
+			{
+				PointF pointF = list[list2[j]];
+				for (int k = j + 1; k < list2.Count; k++)
+				{
+					PointF pointF2 = list[list2[k]];
+					double num10 = (double)pointF2.X - pointF.X;
+					double num11 = (double)pointF2.Y - pointF.Y;
+					double num12 = num10 * num10 + num11 * num11;
+					if (num12 <= 1E-12)
+					{
+						continue;
+					}
+					double num13 = Math.Sqrt(num12);
+					double num14 = num11 / num13;
+					double num15 = num10 / num13;
+					double trimmedResidual = GetTrimmedSquaredResidual(list, pointF.Y, pointF.X, num14, num15, num2);
+					double num16 = double.IsPositiveInfinity(num4) ? 0.0 : Math.Max(1.0, Math.Abs(num4)) * 1E-12;
+					if (trimmedResidual < num4 - num16 || (Math.Abs(trimmedResidual - num4) <= num16 && num12 > num5))
+					{
+						num4 = trimmedResidual;
+						num5 = num12;
+						num6 = ((double)pointF.Y + pointF2.Y) * 0.5;
+						num7 = ((double)pointF.X + pointF2.X) * 0.5;
+						num8 = num14;
+						num9 = num15;
+					}
+				}
+			}
+			if (double.IsPositiveInfinity(num4))
+			{
+				num6 = list.Average((PointF p) => (double)p.Y);
+				num7 = list.Average((PointF p) => (double)p.X);
+			}
+			for (int l = 0; l < 4; l++)
+			{
+				int[] closestPointIndexes = GetClosestPointIndexes(list, num6, num7, num8, num9, num2);
+				if (!TryFitLineTls(list, closestPointIndexes, out var rowCenter, out var colCenter, out var directionRow, out var directionCol))
+				{
+					break;
+				}
+				if (directionRow * Math.Sin(fallbackAngle) + directionCol * Math.Cos(fallbackAngle) < 0.0)
+				{
+					directionRow = 0.0 - directionRow;
+					directionCol = 0.0 - directionCol;
+				}
+				num6 = rowCenter;
+				num7 = colCenter;
+				num8 = directionRow;
+				num9 = directionCol;
+			}
+			double num17 = Math.Sqrt(num8 * num8 + num9 * num9);
+			if (num17 < 1E-12)
+			{
+				num8 = Math.Sin(fallbackAngle);
+				num9 = Math.Cos(fallbackAngle);
+			}
+			else
+			{
+				num8 /= num17;
+				num9 /= num17;
+			}
+			angle = Math.Atan2(num8, num9);
+			if (!ClipInfiniteLineToImage(num6, num7, num8, num9, width, height, out r1, out c1, out r2, out c2))
+			{
+				double num18 = Math.Max(1.0, Math.Max(width, height));
+				r1 = num6 - num8 * num18;
+				c1 = num7 - num9 * num18;
+				r2 = num6 + num8 * num18;
+				c2 = num7 + num9 * num18;
+			}
+			return true;
+		}
+
+		private static double GetTrimmedSquaredResidual(IList<PointF> points, double rowCenter, double colCenter, double directionRow, double directionCol, int keepCount)
+		{
+			double[] array = new double[points.Count];
+			for (int i = 0; i < points.Count; i++)
+			{
+				double num = ((double)points[i].X - colCenter) * directionRow - ((double)points[i].Y - rowCenter) * directionCol;
+				array[i] = num * num;
+			}
+			Array.Sort(array);
+			double num2 = 0.0;
+			for (int j = 0; j < keepCount; j++)
+			{
+				num2 += array[j];
+			}
+			return num2 / (double)keepCount;
+		}
+
+		private static int[] GetClosestPointIndexes(IList<PointF> points, double rowCenter, double colCenter, double directionRow, double directionCol, int keepCount)
+		{
+			List<KeyValuePair<double, int>> list = new List<KeyValuePair<double, int>>(points.Count);
+			for (int i = 0; i < points.Count; i++)
+			{
+				double num = ((double)points[i].X - colCenter) * directionRow - ((double)points[i].Y - rowCenter) * directionCol;
+				list.Add(new KeyValuePair<double, int>(num * num, i));
+			}
+			list.Sort(delegate(KeyValuePair<double, int> a, KeyValuePair<double, int> b)
+			{
+				int num2 = a.Key.CompareTo(b.Key);
+				return (num2 != 0) ? num2 : a.Value.CompareTo(b.Value);
+			});
+			int[] array = new int[keepCount];
+			for (int j = 0; j < keepCount; j++)
+			{
+				array[j] = list[j].Value;
+			}
+			return array;
+		}
+
+		private static bool TryFitLineTls(IList<PointF> points, IList<int> indexes, out double rowCenter, out double colCenter, out double directionRow, out double directionCol)
+		{
+			rowCenter = (colCenter = (directionRow = (directionCol = 0.0)));
+			if (points == null || indexes == null || indexes.Count < 2)
+			{
+				return false;
+			}
+			for (int i = 0; i < indexes.Count; i++)
+			{
+				PointF pointF = points[indexes[i]];
+				rowCenter += pointF.Y;
+				colCenter += pointF.X;
+			}
+			rowCenter /= indexes.Count;
+			colCenter /= indexes.Count;
+			double num = 0.0;
+			double num2 = 0.0;
+			double num3 = 0.0;
+			for (int j = 0; j < indexes.Count; j++)
+			{
+				PointF pointF2 = points[indexes[j]];
+				double num4 = (double)pointF2.X - colCenter;
+				double num5 = (double)pointF2.Y - rowCenter;
+				num += num4 * num4;
+				num2 += num4 * num5;
+				num3 += num5 * num5;
+			}
+			if (num + num3 <= 1E-12)
+			{
+				return false;
+			}
+			double num6 = 0.5 * Math.Atan2(2.0 * num2, num - num3);
+			directionCol = Math.Cos(num6);
+			directionRow = Math.Sin(num6);
+			return true;
 		}
 
 		private static bool TryFitLineStable(HTuple rows, HTuple cols, int width, int height, out double r1, out double c1, out double r2, out double c2, out double angle, out string error)

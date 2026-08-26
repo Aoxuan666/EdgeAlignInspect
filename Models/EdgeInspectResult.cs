@@ -16,7 +16,7 @@ namespace EdgeAlignInspect
 		public bool TemplateMatchEnabled { get; set; }
 
 		public bool TemplateMatchOk { get; set; }
-
+		 
 		public double TemplateMatchScore { get; set; }
 
 		public double TemplateMatchRow { get; set; }
@@ -28,6 +28,8 @@ namespace EdgeAlignInspect
 		public PointF TemplateMatchCenter { get; set; }
 
 		public RotRectF TemplateRoiCur { get; set; }
+
+		public RotRectF TemplateSearchRoiCur { get; set; }
 
 		public List<PointF> TemplateMatchContourPoints { get; } = new List<PointF>();
 

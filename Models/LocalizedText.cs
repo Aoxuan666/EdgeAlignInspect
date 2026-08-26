@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -14,10 +14,13 @@ namespace EdgeAlignInspect
 			{ "参数（当前：", "Parameters (Current: " },
 			{ "参数（当前未选中检测ROI）", "Parameters (No Detect ROI Selected)" },
 			{ "模板设置", "Template Settings" },
+			{ "搜索区域", "Search Region" },
+			{ "搜索区域(运行)", "Search Region (Run)" },
+			{ "红框为模板，黄框为搜索区域；可在图像上拖拽调整。", "Red: template. Yellow: search region. Drag on the image to adjust." },
 			{ "加载图片", "Load Image" },
 			{ "删除选中ROI", "Delete ROI" },
 			{ "运行", "Run" },
-			{ "添加线基准", "Line Base" },
+			{ "添加线基准", "Line Base" }, 
 			{ "添加圆基准", "Circle Base" },
 			{ "添加圆点基准", "Circle Point Base" },
 			{ "添加检测ROI", "Detect ROI" },
@@ -36,7 +39,10 @@ namespace EdgeAlignInspect
 			{ "检测模式", "Detect Mode" },
 			{ "模板匹配", "Template Match" },
 			{ "启用模板匹配", "Enable Match" },
-			{ "最小分数", "Min Score" },
+			{ "启用模板搜索区域", "Enable Template Search Region" },
+			{ "已启用模板搜索区域：模板匹配将限制在黄色搜索框内。", "Template search region enabled: matching is limited to the yellow search box." },
+			{ "已关闭模板搜索区域：模板匹配将搜索整幅图像。", "Template search region disabled: matching searches the entire image." },
+			{ "最小分数", "Min Score" }, 
 			{ "角度起始", "Angle Start" },
 			{ "角度范围", "Angle Range" },
 			{ "找边极性", "Edge Polarity" },
@@ -48,10 +54,12 @@ namespace EdgeAlignInspect
 			{ "点数", "Count" },
 			{ "阈值", "Threshold" },
 			{ "圆外扩", "Circle Out" },
+			{ "正常点占比", "Normal Ratio" },
 			{ "检测结果", "Result" },
 			{ "运行后会在左侧图像显示线、点和偏差标注", "Lines, points and deviations are shown after running." },
 			{ "流程：加载图片 → 按需启用模板匹配/添加ROI → 点击左侧ROI分别配置参数 → 保存(示教) → 运行", "Flow: load image -> enable template match/add ROI as needed -> configure selected ROI -> save teach -> run" },
-			{ "图片已加载：模板匹配当前为启用状态，已自动补模板ROI；基准/检测ROI请按需手动添加。", "Image loaded: template match is enabled. Template ROI was added automatically; add base/detect ROI as needed." },
+			{ "图片已加载：模板匹配当前为启用状态，已自动补模板ROI；基准/检测ROI请按需手动添加。", "Image loaded: template match is enabled. Template ROI was ad." +
+				"ded automatically; add base/detect ROI as needed." },
 			{ "图片已加载：模板匹配当前为关闭状态，不自动生成模板ROI；基准/检测ROI请按需手动添加。", "Image loaded: template match is off. Template ROI will not be created automatically; add base/detect ROI as needed." },
 			{ "图片已加载：模板匹配启用，已自动生成模板ROI；基准/检测ROI请按需添加。", "Image loaded: template match is enabled. Template ROI was created automatically; add base/detect ROI as needed." },
 			{ "图片已加载：模板匹配关闭，不自动生成模板ROI；基准/检测ROI请按需添加。", "Image loaded: template match is off. Template ROI will not be created automatically; add base/detect ROI as needed." },
@@ -70,7 +78,7 @@ namespace EdgeAlignInspect
 			{ "失败", "Failed" },
 			{ "线基准", "Line Base" },
 			{ "圆点", "Circle Point" },
-			{ "局部Δ 最小/最大/平均", "Local Delta Min/Max/Mean" },
+			{ "局部Δ 最小/最大/平均", "Local Delta Min/Max/Me0an" },
 			{ "Δ最小", "Delta Min" },
 			{ "Δ最大", "Delta Max" },
 			{ "Δ平均", "Delta Mean" },
@@ -106,9 +114,10 @@ namespace EdgeAlignInspect
 			{ "低阈值", "Low Threshold" },
 			{ "高阈值", "High Threshold" },
 			{ "点最小间距", "Min Point Distance" },
-			{ "角度分桶", "Angle Bins" },
+			{ "角度分区数", "Angle Bins" },
 			{ "擦除半径", "Erase Radius" },
 			{ "特征点", "Feature Points" },
+			{ "匹配点", "Matched Points" },
 			{ "提取外轮廓点", "Extract Contour" },
 			{ "擦除点", "Erase Points" },
 			{ "重新提取", "Extract Again" },
@@ -117,6 +126,7 @@ namespace EdgeAlignInspect
 			{ "确定", "OK" },
 			{ "取消", "Cancel" },
 			{ "框选或调整模板 ROI 后提取外轮廓点。", "Select or adjust template ROI, then extract contour points." },
+			{ "模板 ROI 为空。", "Template ROI is empty." },
 			{ "模板ROI", "Template ROI" },
 			{ "模板", "Template" },
 			{ "基准ROI", "Base ROI" },
@@ -176,7 +186,7 @@ namespace EdgeAlignInspect
 			{ "判定线无效", "Judge line is invalid" },
 			{ "未取得检测点", "No detect points found" },
 			{ "自拟合线局部判定", "Self-fit local judge" },
-			{ "外部允差(mm)", "External tolerance(mm)" },
+			{ "外部允差(mm)", "External tolera nce(mm)" },
 			{ "本地毛刺允差", "Local burr tolerance" },
 			{ "本地凹陷允差", "Local dent tolerance" },
 			{ "毛刺允差", "Burr tolerance" },
@@ -236,12 +246,11 @@ namespace EdgeAlignInspect
 			}
 			return ReplaceAll(text, ZhToEn);
 		}
-
 		public static string ReasonText(NgReason reasons, InspectionLanguage language)
 		{
 			if (reasons == NgReason.None)
 			{
-				return "OK";
+				return "OK";       
 			}
 			List<string> names = new List<string>();
 			AddIf(names, reasons, NgReason.Burr, language == InspectionLanguage.English ? "Burr" : "毛刺");

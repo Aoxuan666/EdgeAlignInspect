@@ -44,6 +44,10 @@ namespace EdgeAlignInspect
 			{
 				_job.TemplateRoi = CreateDefaultTemplateRoi(_bitmap);
 			}
+			if (_job.TemplateSearchRoi.IsEmpty)
+			{
+				_job.TemplateSearchRoi = CreateDefaultTemplateSearchRoi(_bitmap, _job.TemplateRoi);
+			}
 			ApplyLanguageToUi();
 			_featurePoints = _job.TeachData != null && _job.TeachData.FeaturePoints != null
 				? new List<PointF>(_job.TeachData.FeaturePoints)
@@ -52,11 +56,15 @@ namespace EdgeAlignInspect
 				? _job.TeachData.EraseStrokes.Select(x => x?.DeepClone() ?? new TemplateEraseStroke()).ToList()
 				: new List<TemplateEraseStroke>();
 			LoadJobToControls();
-			BindEvents();
+			_suppressEvents = true;
 			canvas.LoadBitmap(_bitmap);
 			canvas.Language = _job.Language;
 			canvas.AutoClearOverlaysOnRoiEdit = false;
 			canvas.SetRois(_job.TemplateRoi, default(RotRectF), default(RotRectF));
+			canvas.SetTemplateSearchRoi(_job.TemplateSearchRoi);
+			canvas.ShowTemplateSearchRoi = _job.UseTemplateSearchRoi;
+			_suppressEvents = false;
+			BindEvents();
 			canvas.SetSelection(CanvasRoiKind.Template, 0);
 			RefreshFeatureOverlay();
 		}
@@ -94,9 +102,24 @@ namespace EdgeAlignInspect
 				{
 					return;
 				}
+				_job.TemplateSearchRoi = canvas.TemplateSearchRoi;
+				if (RoiApproximatelyEquals(_job.TemplateRoi, canvas.TemplateRoi))
+				{
+					return;
+				}
 				_job.TemplateRoi = canvas.TemplateRoi;
 				ClearTeachModelKeepEraseStrokes();
 				ExtractFeaturePoints(showMessage: false);
+			};
+			chkEnableSearchRoi.CheckedChanged += delegate
+			{
+				if (_suppressEvents)
+				{
+					return;
+				}
+				_job.UseTemplateSearchRoi = chkEnableSearchRoi.Checked;
+				canvas.ShowTemplateSearchRoi = _job.UseTemplateSearchRoi;
+				canvas.Invalidate();
 			};
 			canvas.ImageMouseDown += delegate(PointF p, MouseButtons button)
 			{
@@ -215,7 +238,7 @@ namespace EdgeAlignInspect
 
 			int margin = 10;
 			int panelWidth = Math.Max(300, rightPanel.ClientSize.Width - margin * 2);
-			grpContour.SetBounds(margin, margin, panelWidth, 560);
+			grpContour.SetBounds(margin, margin, panelWidth, 590);
 			int buttonTop = Math.Max(grpContour.Bottom + 16, rightPanel.ClientSize.Height - margin - 32);
 			btnCancel.SetBounds(rightPanel.ClientSize.Width - margin - 90, buttonTop, 90, 32);
 			btnOk.SetBounds(btnCancel.Left - 100, buttonTop, 90, 32);
@@ -227,6 +250,7 @@ namespace EdgeAlignInspect
 			try
 			{
 				chkOuterOnly.Checked = _job.Match.UseOuterContourOnly;
+				chkEnableSearchRoi.Checked = _job.UseTemplateSearchRoi;
 				SetDecimal(numSigma, _job.Match.EdgeSigma);
 				SetDecimal(numLow, _job.Match.EdgeLowThreshold);
 				SetDecimal(numHigh, _job.Match.EdgeHighThreshold);
@@ -247,6 +271,7 @@ namespace EdgeAlignInspect
 				return;
 			}
 			_job.Match.Enabled = true;
+			_job.UseTemplateSearchRoi = chkEnableSearchRoi.Checked;
 			_job.Match.UseOuterContourOnly = chkOuterOnly.Checked;
 			_job.Match.EdgeSigma = (double)numSigma.Value;
 			_job.Match.EdgeLowThreshold = (double)numLow.Value;
@@ -255,6 +280,7 @@ namespace EdgeAlignInspect
 			_job.Match.FeatureAngleBins = (int)numBins.Value;
 			_job.Match.EraseRadiusPx = (double)numEraseRadius.Value;
 			_job.TemplateRoi = canvas.TemplateRoi;
+			_job.TemplateSearchRoi = canvas.TemplateSearchRoi;
 			_job.Normalize();
 		}
 
@@ -268,10 +294,11 @@ namespace EdgeAlignInspect
 			{
 				PullControlsToJob();
 				_job.TemplateRoi = canvas.TemplateRoi;
+				_job.TemplateSearchRoi = canvas.TemplateSearchRoi;
 				_job.Match.Enabled = true;
 				if (_job.TemplateRoi.IsEmpty)
 				{
-					throw new InvalidOperationException("Template ROI is empty.");
+					throw new InvalidOperationException(T("模板 ROI 为空。"));
 				}
 				bool needsModel = _job.TeachData == null ||
 					!_job.TeachData.HasTemplate ||
@@ -428,17 +455,18 @@ namespace EdgeAlignInspect
 				if (result.Found)
 				{
 					canvas.SetRuntimeRois(result.TemplateRoiCur, Enumerable.Empty<RotRectF>(), Enumerable.Empty<RotRectF>());
+					canvas.SetRuntimeTemplateSearchRoi(result.TemplateSearchRoiCur);
 					canvas.ShowRuntimeRois = true;
 					canvas.ShowRois = true;
 					canvas.ClearOverlays();
 					AddMatchContourOverlay(result.MatchContourPoints);
-					lblStatus.Text = result.Message;
+					lblStatus.Text = T(result.Message);
 				}
 				else
 				{
 					canvas.ShowRuntimeRois = false;
-					lblStatus.Text = result.Message;
-					MessageBox.Show(this, result.Message, T("测试匹配"), MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+					lblStatus.Text = T(result.Message);
+					MessageBox.Show(this, T(result.Message), T("测试匹配"), MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
 				}
 				canvas.Invalidate();
 			}
@@ -536,9 +564,9 @@ namespace EdgeAlignInspect
 					Color = Color.FromArgb(255, 170, 30)
 				});
 			}
-			lblCount.Text = T("特征点") + ": " + _featurePoints.Count;
-			canvas.HudText = "Points: " + GetRealFeatureCount(_featurePoints);
-			lblCount.Text = T("特征点") + ": " + GetRealFeatureCount(_featurePoints);
+			int realFeatureCount = GetRealFeatureCount(_featurePoints);
+			lblCount.Text = T("特征点") + ": " + realFeatureCount;
+			canvas.HudText = lblCount.Text;
 			canvas.HudTextColor = Color.FromArgb(255, 220, 120);
 			AddEraseBrushOverlay();
 			canvas.Invalidate();
@@ -603,7 +631,7 @@ namespace EdgeAlignInspect
 				});
 			}
 			flushSegment();
-			canvas.HudText = "Match: " + GetRealFeatureCount(points) + " pts";
+			canvas.HudText = T("匹配点") + ": " + GetRealFeatureCount(points);
 			canvas.HudTextColor = Color.Lime;
 		}
 		private static IEnumerable<PointF> GetFeaturePointsForDisplay(IList<PointF> points)
@@ -723,6 +751,23 @@ namespace EdgeAlignInspect
 			return RotRectF.FromAxisAligned(new RectangleF((bmp.Width - w) * 0.5f, (bmp.Height - h) * 0.5f, w, h));
 		}
 
+		private static RotRectF CreateDefaultTemplateSearchRoi(Bitmap bmp, RotRectF templateRoi)
+		{
+			if (bmp == null || templateRoi.IsEmpty)
+			{
+				return default(RotRectF);
+			}
+			RectangleF bounds = templateRoi.BoundingBox();
+			float imageWidth = bmp.Width;
+			float imageHeight = bmp.Height;
+			float searchWidth = Math.Min(imageWidth, Math.Max(bounds.Width, Math.Min(imageWidth * 0.8f, Math.Max(bounds.Width * 2f, bounds.Width + 64f))));
+			float searchHeight = Math.Min(imageHeight, Math.Max(bounds.Height, Math.Min(imageHeight * 0.8f, Math.Max(bounds.Height * 2f, bounds.Height + 64f))));
+			float left = Math.Max(0f, Math.Min(bounds.Left + bounds.Width * 0.5f - searchWidth * 0.5f, imageWidth - searchWidth));
+			float top = Math.Max(0f, Math.Min(bounds.Top + bounds.Height * 0.5f - searchHeight * 0.5f, imageHeight - searchHeight));
+			RectangleF search = new RectangleF(left, top, searchWidth, searchHeight);
+			return search.Width > 2f && search.Height > 2f ? RotRectF.FromAxisAligned(search) : default(RotRectF);
+		}
+
 		private static void SetDecimal(NumericUpDown num, double value)
 		{
 			decimal v = (decimal)value;
@@ -742,6 +787,19 @@ namespace EdgeAlignInspect
 			double dx = a.X - b.X;
 			double dy = a.Y - b.Y;
 			return dx * dx + dy * dy;
+		}
+
+		private static bool RoiApproximatelyEquals(RotRectF a, RotRectF b)
+		{
+			if (a.IsEmpty && b.IsEmpty)
+			{
+				return true;
+			}
+			if (a.IsEmpty != b.IsEmpty)
+			{
+				return false;
+			}
+			return Math.Abs(a.Cx - b.Cx) < 0.001f && Math.Abs(a.Cy - b.Cy) < 0.001f && Math.Abs(a.Phi - b.Phi) < 0.001f && Math.Abs(a.HalfLen1 - b.HalfLen1) < 0.001f && Math.Abs(a.HalfLen2 - b.HalfLen2) < 0.001f;
 		}
 	}
 }

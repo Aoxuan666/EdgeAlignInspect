@@ -30,3 +30,6 @@ codex_threads_fix_snapshot.sql
 
 # NuGet package cache; project keeps Lib/halcondotnet.dll as the referenced assembly.
 packages/
+
+# Local signing certificates and private keys
+*.pfx

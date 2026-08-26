@@ -4,6 +4,7 @@ namespace EdgeAlignInspect
 	{
 		None,
 		Template,
+		TemplateSearch,
 		Base,
 		Detect,
 		CircleBase1,

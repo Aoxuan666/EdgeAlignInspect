@@ -212,6 +212,7 @@ namespace EdgeAlignInspect
 				throw new ArgumentException(message, "options");
 			}
 		}
+		
 
 		private static bool TryValidateToleranceOptions(EdgeInspectionToleranceOptions options, out string message)
 		{

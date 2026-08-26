@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.ComponentModel;
 using System.Drawing;
 using System.IO;
@@ -20,11 +20,14 @@ namespace EdgeAlignInspect
 
 		private Button button2;
 
+		private Button button3;
+
 		public Form2()
 		{
 			InitializeComponent();
 			button1.Text = "选择图片";
 			button2.Text = "模拟调用SDK";
+			button3.Text = "运行SDK看Message";
 		}
 
 		private void button1_Click(object sender, EventArgs e)
@@ -72,6 +75,37 @@ namespace EdgeAlignInspect
 			catch (Exception ex)
 			{
 				MessageBox.Show(this, "调用 SDK 失败：\n" + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Hand);
+			}
+		}
+
+		private void button3_Click(object sender, EventArgs e)
+		{
+			if (string.IsNullOrWhiteSpace(_imagePath))
+			{
+				MessageBox.Show(this, "请先点击“选择图片”。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+				return;
+			}
+
+			try
+			{
+				using (Bitmap bitmap = new Bitmap(_imagePath))
+				{
+					if (_job == null)
+					{
+						_job = BuildMockJob(bitmap);
+					}
+
+					EdgeInspectResult result = _sdk.RunInspection(bitmap, _job, CreateToleranceOptions());
+					string message = string.IsNullOrEmpty(result?.Message) ? "(空字符串)" : result.Message;
+					string ngReasons = result == null ? "" : "\nNgReasons: " + result.NgReasons;
+					string success = result == null ? "null" : result.Success.ToString();
+
+					MessageBox.Show(this, "Success: " + success + ngReasons + "\nMessage:\n" + message, "SDK 返回 Message", MessageBoxButtons.OK, MessageBoxIcon.Information);
+				}
+			}
+			catch (Exception ex)
+			{
+				MessageBox.Show(this, "直接运行 SDK 失败：\n" + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Hand);
 			}
 		}
 
@@ -224,24 +258,33 @@ namespace EdgeAlignInspect
 		{
 			this.button1 = new System.Windows.Forms.Button();
 			this.button2 = new System.Windows.Forms.Button();
+			this.button3 = new System.Windows.Forms.Button();
 			base.SuspendLayout();
-			this.button1.Location = new System.Drawing.Point(204, 177);
+			this.button1.Location = new System.Drawing.Point(160, 177);
 			this.button1.Name = "button1";
-			this.button1.Size = new System.Drawing.Size(75, 23);
+			this.button1.Size = new System.Drawing.Size(100, 28);
 			this.button1.TabIndex = 0;
 			this.button1.Text = "button1";
 			this.button1.UseVisualStyleBackColor = true;
 			this.button1.Click += new System.EventHandler(button1_Click);
-			this.button2.Location = new System.Drawing.Point(393, 177);
+			this.button2.Location = new System.Drawing.Point(310, 177);
 			this.button2.Name = "button2";
-			this.button2.Size = new System.Drawing.Size(75, 23);
-			this.button2.TabIndex = 0;
+			this.button2.Size = new System.Drawing.Size(120, 28);
+			this.button2.TabIndex = 1;
 			this.button2.Text = "button2";
 			this.button2.UseVisualStyleBackColor = true;
 			this.button2.Click += new System.EventHandler(button2_Click);
+			this.button3.Location = new System.Drawing.Point(480, 177);
+			this.button3.Name = "button3";
+			this.button3.Size = new System.Drawing.Size(150, 28);
+			this.button3.TabIndex = 2;
+			this.button3.Text = "button3";
+			this.button3.UseVisualStyleBackColor = true;
+			this.button3.Click += new System.EventHandler(button3_Click);
 			base.AutoScaleDimensions = new System.Drawing.SizeF(8f, 15f);
 			base.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
 			base.ClientSize = new System.Drawing.Size(800, 450);
+			base.Controls.Add(this.button3);
 			base.Controls.Add(this.button2);
 			base.Controls.Add(this.button1);
 			base.Name = "Form2";

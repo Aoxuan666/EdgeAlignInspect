@@ -59,6 +59,8 @@ namespace EdgeAlignInspect
 
 		private bool _showTemplateRoi = true;
 
+		private bool _showTemplateSearchRoi = true;
+
 		private bool _showRuntimeRois = false;
 
 		private EditMode _edit = EditMode.None;
@@ -79,11 +81,17 @@ namespace EdgeAlignInspect
 
 		public RotRectF TemplateRoi { get; private set; } = default(RotRectF);
 
+		public RotRectF TemplateSearchRoi { get; private set; } = default(RotRectF);
+
 		public RotRectF RuntimeTemplateRoi { get; private set; } = default(RotRectF);
+
+		public RotRectF RuntimeTemplateSearchRoi { get; private set; } = default(RotRectF);
 
 		public List<ColoredPolyline> OverlayLines { get; } = new List<ColoredPolyline>();
 
 		public List<SolidPoint> OverlayPoints { get; } = new List<SolidPoint>();
+
+		private readonly List<Rectangle> _paintLabelBounds = new List<Rectangle>();
 
 		public string HudText { get; set; } = "";
 
@@ -129,6 +137,26 @@ namespace EdgeAlignInspect
 				{
 					_showTemplateRoi = value;
 					if (!_showTemplateRoi && SelectedRoi.Kind == CanvasRoiKind.Template)
+					{
+						SetSelection(CanvasRoiKind.None, -1);
+					}
+					Invalidate();
+				}
+			}
+		}
+
+		public bool ShowTemplateSearchRoi
+		{
+			get
+			{
+				return _showTemplateSearchRoi;
+			}
+			set
+			{
+				if (_showTemplateSearchRoi != value)
+				{
+					_showTemplateSearchRoi = value;
+					if (!_showTemplateSearchRoi && SelectedRoi.Kind == CanvasRoiKind.TemplateSearch)
 					{
 						SetSelection(CanvasRoiKind.None, -1);
 					}
@@ -283,6 +311,7 @@ namespace EdgeAlignInspect
 		{
 			PrepareForEditRoiDisplay();
 			TemplateRoi = tpl;
+			TemplateSearchRoi = default(RotRectF);
 			_baseRois.Clear();
 			_circleBaseRois.Clear();
 			_circlePointRois.Clear();
@@ -304,6 +333,15 @@ namespace EdgeAlignInspect
 		{
 			PrepareForEditRoiDisplay();
 			TemplateRoi = roi;
+			NormalizeSelectionAfterRoiChange();
+			this.RoiChanged?.Invoke();
+			Invalidate();
+		}
+
+		public void SetTemplateSearchRoi(RotRectF roi)
+		{
+			PrepareForEditRoiDisplay();
+			TemplateSearchRoi = roi;
 			NormalizeSelectionAfterRoiChange();
 			this.RoiChanged?.Invoke();
 			Invalidate();
@@ -349,6 +387,7 @@ namespace EdgeAlignInspect
 		{
 			PrepareForEditRoiDisplay();
 			TemplateRoi = tpl;
+			TemplateSearchRoi = default(RotRectF);
 			_baseRois.Clear();
 			_circleBaseRois.Clear();
 			_circlePointRois.Clear();
@@ -432,6 +471,14 @@ namespace EdgeAlignInspect
 			if (SelectedRoi.Kind == CanvasRoiKind.Template)
 			{
 				return false;
+			}
+			if (SelectedRoi.Kind == CanvasRoiKind.TemplateSearch)
+			{
+				TemplateSearchRoi = default(RotRectF);
+				SetSelection(CanvasRoiKind.None, -1);
+				this.RoiChanged?.Invoke();
+				Invalidate();
+				return true;
 			}
 			if (SelectedRoi.Kind == CanvasRoiKind.Base)
 			{
@@ -528,6 +575,13 @@ namespace EdgeAlignInspect
 					Index = 0
 				});
 				break;
+			case CanvasRoiKind.TemplateSearch:
+				selectedRoi = (TemplateSearchRoi.IsEmpty || !ShowTemplateSearchRoi ? CanvasRoiSelection.None : new CanvasRoiSelection
+				{
+					Kind = CanvasRoiKind.TemplateSearch,
+					Index = 0
+				});
+				break;
 			case CanvasRoiKind.Base:
 				selectedRoi = ((index >= 0 && index < _baseRois.Count) ? new CanvasRoiSelection
 				{
@@ -595,6 +649,7 @@ namespace EdgeAlignInspect
 		public void SetRuntimeRois(RotRectF tpl, RotRectF baseRoi, RotRectF detectRoi)
 		{
 			RuntimeTemplateRoi = tpl;
+			RuntimeTemplateSearchRoi = default(RotRectF);
 			_runtimeBaseRois.Clear();
 			_runtimeDetectRois.Clear();
 			if (!baseRoi.IsEmpty)
@@ -621,6 +676,7 @@ namespace EdgeAlignInspect
 		public void SetRuntimeRois(RotRectF tpl, IEnumerable<RotRectF> baseRois, IEnumerable<CircleBaseRoiPair> circleBaseRois, IEnumerable<CircleRoiF> circlePointRois, IEnumerable<RotRectF> detectRois)
 		{
 			RuntimeTemplateRoi = tpl;
+			RuntimeTemplateSearchRoi = default(RotRectF);
 			_runtimeBaseRois.Clear();
 			_runtimeCircleBaseRois.Clear();
 			_runtimeCirclePointRois.Clear();
@@ -644,9 +700,16 @@ namespace EdgeAlignInspect
 			Invalidate();
 		}
 
+		public void SetRuntimeTemplateSearchRoi(RotRectF roi)
+		{
+			RuntimeTemplateSearchRoi = roi;
+			Invalidate();
+		}
+
 		public void ClearRuntimeRois()
 		{
 			RuntimeTemplateRoi = default(RotRectF);
+			RuntimeTemplateSearchRoi = default(RotRectF);
 			_runtimeBaseRois.Clear();
 			_runtimeCircleBaseRois.Clear();
 			_runtimeCirclePointRois.Clear();
@@ -678,6 +741,7 @@ namespace EdgeAlignInspect
 		protected override void OnPaint(PaintEventArgs e)
 		{
 			Graphics graphics = e.Graphics;
+			_paintLabelBounds.Clear();
 			graphics.Clear(BackColor);
 			graphics.SmoothingMode = SmoothingMode.AntiAlias;
 			if (_bmp == null)
@@ -688,6 +752,10 @@ namespace EdgeAlignInspect
 			graphics.DrawImage(_bmp, _pan.X, _pan.Y, (float)_bmp.Width * _zoom, (float)_bmp.Height * _zoom);
 			if (ShowRois)
 			{
+				if (ShowTemplateSearchRoi)
+				{
+					DrawRoi(graphics, TemplateSearchRoi, LocalizedText.Ui("搜索区域", Language), Color.Gold, SelectedRoi.Kind == CanvasRoiKind.TemplateSearch, drawArrow: false, dashed: true, SelectedRoi.Kind == CanvasRoiKind.TemplateSearch);
+				}
 				DrawRoi(graphics, TemplateRoi, LocalizedText.Ui("模板", Language), Color.Red, SelectedRoi.Kind == CanvasRoiKind.Template, drawArrow: false, dashed: false, SelectedRoi.Kind == CanvasRoiKind.Template);
 				for (int i = 0; i < _baseRois.Count; i++)
 				{
@@ -717,6 +785,7 @@ namespace EdgeAlignInspect
 			}
 			if (ShowRuntimeRois)
 			{
+				DrawRoi(graphics, RuntimeTemplateSearchRoi, LocalizedText.Ui("搜索区域(运行)", Language), Color.FromArgb(230, 255, 215, 0), selected: false, drawArrow: false, dashed: true, showHandles: false);
 				DrawRoi(graphics, RuntimeTemplateRoi, LocalizedText.Ui("模板(运行)", Language), Color.FromArgb(230, 255, 120, 120), selected: false, drawArrow: false, dashed: true, showHandles: false);
 				for (int m = 0; m < _runtimeBaseRois.Count; m++)
 				{
@@ -761,6 +830,10 @@ namespace EdgeAlignInspect
 					graphics.DrawLines(pen3, overlayLine.Points.Select(ImageToScreen).ToArray());
 				}
 			}
+			if (!string.IsNullOrWhiteSpace(HudText))
+			{
+				_paintLabelBounds.Add(DrawHud(graphics, HudText, HudTextColor, 10, 10));
+			}
 			foreach (SolidPoint overlayPoint in OverlayPoints)
 			{
 				PointF pointF = ImageToScreen(overlayPoint.Center);
@@ -769,45 +842,99 @@ namespace EdgeAlignInspect
 				{
 					graphics.FillEllipse(brush, pointF.X - num3, pointF.Y - num3, num3 * 2f, num3 * 2f);
 				}
-				if (!string.IsNullOrEmpty(overlayPoint.Label))
-				{
-					Point pt = new Point((int)(pointF.X + 6f), (int)(pointF.Y + 6f));
-					TextRenderer.DrawText(graphics, overlayPoint.Label, Font, pt, overlayPoint.Color);
-				}
 			}
-			if (!string.IsNullOrWhiteSpace(HudText))
+			foreach (SolidPoint overlayPoint2 in OverlayPoints.Where((SolidPoint x) => !string.IsNullOrWhiteSpace(x.Label)).OrderByDescending((SolidPoint x) => x.LabelPriority))
 			{
-				DrawHud(graphics, HudText, HudTextColor, 10, 10);
+				DrawOverlayLabel(graphics, overlayPoint2);
 			}
 		}
 
-		private void DrawHud(Graphics g, string text, Color color, int x, int y)
+		private Rectangle DrawHud(Graphics g, string text, Color color, int x, int y)
 		{
-			string[] array = text.Replace("\r\n", "\n").Split('\n');
-			int num = 6;
-			int num2 = 0;
-			int num3 = 0;
-			string[] array2 = array;
-			string[] array3 = array2;
-			foreach (string text2 in array3)
-			{
-				Size size = TextRenderer.MeasureText(text2, Font);
-				num2 = Math.Max(num2, size.Width);
-				num3 += size.Height;
-			}
-			Rectangle rect = new Rectangle(x, y, num2 + num * 2, num3 + num * 2);
+			const int padding = 6;
+			int originX = Math.Max(0, Math.Min(Math.Max(0, ClientSize.Width - 1), x));
+			int originY = Math.Max(0, Math.Min(Math.Max(0, ClientSize.Height - 1), y));
+			int maxWidth = Math.Max(1, ClientSize.Width - originX - 2);
+			int maxHeight = Math.Max(1, ClientSize.Height - originY - 2);
+			TextFormatFlags flags = TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
+			Size measured = TextRenderer.MeasureText(text.Replace("\r\n", "\n"), Font, new Size(Math.Max(20, maxWidth - padding * 2), Math.Max(18, maxHeight - padding * 2)), flags);
+			Rectangle rect = new Rectangle(originX, originY, Math.Min(maxWidth, measured.Width + padding * 2), Math.Min(maxHeight, measured.Height + padding * 2));
 			using (SolidBrush brush = new SolidBrush(Color.FromArgb(140, 0, 0, 0)))
 			{
 				g.FillRectangle(brush, rect);
 			}
-			int num4 = y + num;
-			string[] array4 = array;
-			string[] array5 = array4;
-			foreach (string text3 in array5)
+			Rectangle content = new Rectangle(rect.X + Math.Min(padding, rect.Width / 3), rect.Y + Math.Min(padding, rect.Height / 3), Math.Max(1, rect.Width - Math.Min(padding * 2, rect.Width - 1)), Math.Max(1, rect.Height - Math.Min(padding * 2, rect.Height - 1)));
+			TextRenderer.DrawText(g, text, Font, content, color, flags);
+			return rect;
+		}
+
+		private void DrawOverlayLabel(Graphics g, SolidPoint point)
+		{
+			PointF anchor = ImageToScreen(point.Center);
+			Size measured = TextRenderer.MeasureText(point.Label, Font);
+			Size boxSize = new Size(Math.Min(Math.Max(24, ClientSize.Width - 4), measured.Width + 8), measured.Height + 4);
+			Point[] offsets = new Point[16]
 			{
-				TextRenderer.DrawText(g, text3, Font, new Point(x + num, num4), color);
-				num4 += TextRenderer.MeasureText(text3, Font).Height;
+				new Point(8, 8),
+				new Point(8, -boxSize.Height - 8),
+				new Point(-boxSize.Width - 8, 8),
+				new Point(-boxSize.Width - 8, -boxSize.Height - 8),
+				new Point(16, -boxSize.Height / 2),
+				new Point(-boxSize.Width - 16, -boxSize.Height / 2),
+				new Point(-boxSize.Width / 2, 16),
+				new Point(-boxSize.Width / 2, -boxSize.Height - 16),
+				new Point(34, 34),
+				new Point(34, -boxSize.Height - 34),
+				new Point(-boxSize.Width - 34, 34),
+				new Point(-boxSize.Width - 34, -boxSize.Height - 34),
+				new Point(54, -boxSize.Height / 2),
+				new Point(-boxSize.Width - 54, -boxSize.Height / 2),
+				new Point(-boxSize.Width / 2, 54),
+				new Point(-boxSize.Width / 2, -boxSize.Height - 54)
+			};
+			Rectangle best = Rectangle.Empty;
+			int bestOverlap = int.MaxValue;
+			foreach (Point offset in offsets)
+			{
+				Rectangle candidate = ClampLabelRectangle(new Rectangle((int)anchor.X + offset.X, (int)anchor.Y + offset.Y, boxSize.Width, boxSize.Height));
+				int overlap = _paintLabelBounds.Sum((Rectangle occupied) => IntersectionArea(candidate, occupied));
+				if (overlap == 0)
+				{
+					best = candidate;
+					bestOverlap = 0;
+					break;
+				}
+				if (overlap < bestOverlap)
+				{
+					best = candidate;
+					bestOverlap = overlap;
+				}
 			}
+			if (best.IsEmpty || (bestOverlap > 0 && point.LabelPriority < 50))
+			{
+				return;
+			}
+			using (SolidBrush brush = new SolidBrush(Color.FromArgb(175, 0, 0, 0)))
+			{
+				g.FillRectangle(brush, best);
+			}
+			TextRenderer.DrawText(g, point.Label, Font, Rectangle.Inflate(best, -4, -2), point.Color, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+			_paintLabelBounds.Add(best);
+		}
+
+		private Rectangle ClampLabelRectangle(Rectangle rect)
+		{
+			int width = Math.Min(Math.Max(1, ClientSize.Width), rect.Width);
+			int height = Math.Min(Math.Max(1, ClientSize.Height), rect.Height);
+			int x = Math.Max(0, Math.Min(Math.Max(0, ClientSize.Width - width), rect.X));
+			int y = Math.Max(0, Math.Min(Math.Max(0, ClientSize.Height - height), rect.Y));
+			return new Rectangle(x, y, width, height);
+		}
+
+		private static int IntersectionArea(Rectangle a, Rectangle b)
+		{
+			Rectangle intersection = Rectangle.Intersect(a, b);
+			return intersection.IsEmpty ? 0 : intersection.Width * intersection.Height;
 		}
 
 		private void DrawRoi(Graphics g, RotRectF roi, string label, Color color, bool selected, bool drawArrow, bool dashed, bool showHandles)
@@ -888,11 +1015,13 @@ namespace EdgeAlignInspect
 		private void DrawLabel(Graphics g, Point pt, string text, Color color)
 		{
 			Size size = TextRenderer.MeasureText(text, Font);
+			Rectangle bounds = ClampLabelRectangle(new Rectangle(pt, new Size(size.Width + 6, size.Height + 2)));
 			using (SolidBrush brush = new SolidBrush(Color.FromArgb(140, 0, 0, 0)))
 			{
-				g.FillRectangle(brush, new Rectangle(pt, new Size(size.Width + 6, size.Height + 2)));
+				g.FillRectangle(brush, bounds);
 			}
-			TextRenderer.DrawText(g, text, Font, new Rectangle(pt.X + 3, pt.Y + 1, size.Width, size.Height), color, TextFormatFlags.Default);
+			TextRenderer.DrawText(g, text, Font, Rectangle.Inflate(bounds, -3, -1), color, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+			_paintLabelBounds.Add(bounds);
 		}
 
 		private void DrawRoiArrow(Graphics g, RotRectF roi, Color color, bool dashed)
@@ -944,6 +1073,13 @@ namespace EdgeAlignInspect
 					return;
 				}
 				_roiDirtyDuringEdit = false;
+				if (SelectedRoi.Kind == CanvasRoiKind.TemplateSearch
+					&& ShowTemplateRoi
+					&& !HitRoiHandle(TemplateSearchRoi, e.Location)
+					&& HitSelectRoi(CanvasRoiKind.Template, 0, TemplateRoi, e.Location))
+				{
+					return;
+				}
 				if (HitSelectCurrentRoi(e.Location))
 				{
 					return;
@@ -976,12 +1112,17 @@ namespace EdgeAlignInspect
 						return;
 					}
 				}
-				if (!ShowTemplateRoi || !HitSelectRoi(CanvasRoiKind.Template, 0, TemplateRoi, e.Location))
+				if (ShowTemplateRoi && HitSelectRoi(CanvasRoiKind.Template, 0, TemplateRoi, e.Location))
 				{
-					SetSelection(CanvasRoiKind.None, -1);
-					_edit = EditMode.None;
-					Invalidate();
+					return;
 				}
+				if (ShowTemplateSearchRoi && HitSelectRoi(CanvasRoiKind.TemplateSearch, 0, TemplateSearchRoi, e.Location))
+				{
+					return;
+				}
+				SetSelection(CanvasRoiKind.None, -1);
+				_edit = EditMode.None;
+				Invalidate();
 			}
 		}
 
@@ -1230,6 +1371,19 @@ namespace EdgeAlignInspect
 			return new Rectangle((int)pointF.X - num / 2, (int)pointF.Y - num / 2, num, num);
 		}
 
+		private bool HitRoiHandle(RotRectF roi, Point mouse)
+		{
+			if (roi.IsEmpty)
+			{
+				return false;
+			}
+			return GetRotateHandleScreen(roi).Contains(mouse)
+				|| GetEdgeHandleScreen(roi, EdgeHandleKind.LongPos).Contains(mouse)
+				|| GetEdgeHandleScreen(roi, EdgeHandleKind.LongNeg).Contains(mouse)
+				|| GetEdgeHandleScreen(roi, EdgeHandleKind.ShortPos).Contains(mouse)
+				|| GetEdgeHandleScreen(roi, EdgeHandleKind.ShortNeg).Contains(mouse);
+		}
+
 		private bool HitRoiBody(RotRectF roi, Point pScreen)
 		{
 			if (roi.IsEmpty)
@@ -1413,6 +1567,8 @@ namespace EdgeAlignInspect
 			{
 			case CanvasRoiKind.Template:
 				return TemplateRoi;
+			case CanvasRoiKind.TemplateSearch:
+				return TemplateSearchRoi;
 			case CanvasRoiKind.Base:
 				if (sel.Index >= 0 && sel.Index < _baseRois.Count)
 				{
@@ -1456,6 +1612,9 @@ namespace EdgeAlignInspect
 			{
 			case CanvasRoiKind.Template:
 				TemplateRoi = roi;
+				break;
+			case CanvasRoiKind.TemplateSearch:
+				TemplateSearchRoi = roi;
 				break;
 			case CanvasRoiKind.Base:
 				if (sel.Index >= 0 && sel.Index < _baseRois.Count)
@@ -1534,6 +1693,12 @@ namespace EdgeAlignInspect
 			{
 			case CanvasRoiKind.Template:
 				if (TemplateRoi.IsEmpty || !ShowTemplateRoi)
+				{
+					SetSelection(CanvasRoiKind.None, -1);
+				}
+				break;
+			case CanvasRoiKind.TemplateSearch:
+				if (TemplateSearchRoi.IsEmpty || !ShowTemplateSearchRoi)
 				{
 					SetSelection(CanvasRoiKind.None, -1);
 				}

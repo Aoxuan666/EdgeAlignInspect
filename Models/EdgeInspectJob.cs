@@ -11,6 +11,13 @@ namespace EdgeAlignInspect
 
 		public RotRectF TemplateRoi { get; set; }
 
+		// Empty keeps backward compatibility; when enabled, an empty ROI falls back to whole-image search.
+		public RotRectF TemplateSearchRoi { get; set; }
+
+		// The search ROI is opt-in at runtime. The default keeps existing jobs
+		// using the configured finite region while allowing an explicit full-image search.
+		public bool UseTemplateSearchRoi { get; set; } = true;
+
 		public List<BaseRoiItem> BaseRois { get; set; } = new List<BaseRoiItem>();
 
 		public List<CircleBaseRoiItem> CircleBaseRois { get; set; } = new List<CircleBaseRoiItem>();
@@ -28,12 +35,13 @@ namespace EdgeAlignInspect
 		public CaliperParameters CircleCaliper { get; set; } = CreateDefaultCircleCaliper();
 
 		public CaliperParameters DetectCaliper { get; set; } = CreateDefaultDetectCaliper();
-
+		 
 		public DefectDetectMode DetectMode { get; set; } = DefectDetectMode.Both;
 
 		public TemplateTeachData TeachData { get; set; } = new TemplateTeachData();
 
 		public InspectionLanguage Language { get; set; } = InspectionLanguage.Chinese;
+		//public InspectionLanguage Language { get; set; } = InspectionLanguage.English;
 
 		public bool UseExternalBurrTolerance { get; set; } = false;
 
@@ -165,6 +173,7 @@ namespace EdgeAlignInspect
 				Sigma = 1.0,
 				Threshold = 15.0,
 				SearchOutward = 0.0,
+				LineFitNormalRatio = 0.60,
 				MeasureInterpolation = "bicubic",
 				MeasureSelect = "first",
 				Transition = "negative"
@@ -422,6 +431,16 @@ namespace EdgeAlignInspect
 				{
 					cp.SearchOutward = ((caliperParameters.SearchOutward > 0.0) ? caliperParameters.SearchOutward : 0.0);
 				}
+				double num = caliperParameters.LineFitNormalRatio;
+				if (double.IsNaN(num) || double.IsInfinity(num) || num <= 0.0)
+				{
+					num = 0.60;
+				}
+				if (double.IsNaN(cp.LineFitNormalRatio) || double.IsInfinity(cp.LineFitNormalRatio) || cp.LineFitNormalRatio <= 0.0)
+				{
+					cp.LineFitNormalRatio = num;
+				}
+				cp.LineFitNormalRatio = Math.Max(0.10, Math.Min(1.0, cp.LineFitNormalRatio));
 				if (string.IsNullOrWhiteSpace(cp.MeasureInterpolation))
 				{
 					cp.MeasureInterpolation = (string.IsNullOrWhiteSpace(caliperParameters.MeasureInterpolation) ? "bicubic" : caliperParameters.MeasureInterpolation);
@@ -430,10 +449,7 @@ namespace EdgeAlignInspect
 				{
 					cp.MeasureSelect = (string.IsNullOrWhiteSpace(caliperParameters.MeasureSelect) ? "first" : caliperParameters.MeasureSelect);
 				}
-				if (string.IsNullOrWhiteSpace(cp.Transition))
-				{
-					cp.Transition = (string.IsNullOrWhiteSpace(caliperParameters.Transition) ? "negative" : caliperParameters.Transition);
-				}
+				cp.Transition = CaliperParameters.NormalizeTransition(cp.Transition, caliperParameters.Transition);
 			}
 		}
 
