@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" Condition="false" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{4B372863-62CF-4D85-96CE-9D92B45ED251}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>EdgeAlignInspect</RootNamespace>
+    <AssemblyName>EdgeAlignInspect</AssemblyName>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Deterministic>true</Deterministic>
+    <RuntimeIdentifiers>win</RuntimeIdentifiers>
+    <PublishUrl>C:\Users\智茂软件研发部\Desktop\demo\</PublishUrl>
+    <Install>true</Install>
+    <InstallFrom>Disk</InstallFrom>
+    <UpdateEnabled>false</UpdateEnabled>
+    <UpdateMode>Foreground</UpdateMode>
+    <UpdateInterval>7</UpdateInterval>
+    <UpdateIntervalUnits>Days</UpdateIntervalUnits>
+    <UpdatePeriodically>false</UpdatePeriodically>
+    <UpdateRequired>false</UpdateRequired>
+    <MapFileExtensions>true</MapFileExtensions>
+    <ApplicationRevision>0</ApplicationRevision>
+    <ApplicationVersion>1.0.0.%2a</ApplicationVersion>
+    <IsWebBootstrapper>false</IsWebBootstrapper>
+    <UseApplicationTrust>false</UseApplicationTrust>
+    <PublishWizardCompleted>true</PublishWizardCompleted>
+    <BootstrapperEnabled>true</BootstrapperEnabled>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup>
+    <StartupObject />
+  </PropertyGroup>
+  <PropertyGroup>
+    <ManifestCertificateThumbprint>8D189511416149AF924CC566236EF879C82FF267</ManifestCertificateThumbprint>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ManifestKeyFile>EdgeAlignInspect_TemporaryKey.pfx</ManifestKeyFile>
+  </PropertyGroup>
+  <PropertyGroup>
+    <GenerateManifests>false</GenerateManifests>
+  </PropertyGroup>
+  <PropertyGroup>
+    <SignManifests>false</SignManifests>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <Reference Include="HalconDotNet">
+      <HintPath>Lib\halcondotnet.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="Controls\CanvasRoiKind.cs" />
+    <Compile Include="Controls\CanvasRoiSelection.cs" />
+    <Compile Include="Controls\CircleBaseRoiPair.cs" />
+    <Compile Include="Controls\ColoredPolyline.cs" />
+    <Compile Include="Controls\HalconCanvas.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Controls\SolidPoint.cs" />
+    <Compile Include="Forms\Form1.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Forms\TemplateSettingsForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Forms\TemplateSettingsForm.Designer.cs">
+      <DependentUpon>TemplateSettingsForm.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Forms\Form2.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Geometry\CircleRoiF.cs" />
+    <Compile Include="Geometry\RotRectF.cs" />
+    <Compile Include="Models\BaseRoiInspectResult.cs" />
+    <Compile Include="Models\BaseRoiItem.cs" />
+    <Compile Include="Models\CaliperParameters.cs" />
+    <Compile Include="Models\CircleBaseRoiInspectResult.cs" />
+    <Compile Include="Models\CircleBaseRoiItem.cs" />
+    <Compile Include="Models\CirclePointRoiInspectResult.cs" />
+    <Compile Include="Models\CirclePointRoiItem.cs" />
+    <Compile Include="Models\DefectDetectMode.cs" />
+    <Compile Include="Models\DetectAngleReferenceMode.cs" />
+    <Compile Include="Models\DetectRoiInspectResult.cs" />
+    <Compile Include="Models\DetectRoiItem.cs" />
+    <Compile Include="Models\EdgeCircleFit.cs" />
+    <Compile Include="Models\EdgeInspectionToleranceOptions.cs" />
+    <Compile Include="Models\EdgeInspectJob.cs" />
+    <Compile Include="Models\EdgeInspectJobCloneExtensions.cs" />
+    <Compile Include="Models\EdgeInspectResult.cs" />
+    <Compile Include="Models\EdgeLineFit.cs" />
+    <Compile Include="Models\EdgePointResult.cs" />
+    <Compile Include="Models\InspectionLanguage.cs" />
+    <Compile Include="Models\LocalizedText.cs" />
+    <Compile Include="Models\NgReason.cs" />
+    <Compile Include="Models\NgReasonHelper.cs" />
+    <Compile Include="Models\ReferenceBaseKind.cs" />
+    <Compile Include="Models\TemplateMatchParameters.cs" />
+    <Compile Include="Models\TemplateTeachData.cs" />
+    <Compile Include="Processing\TemplateEdgeInspectProcessor.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Sdk\TemplateEdgeInspectSdk.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
+    <None Include="app.manifest" />
+    <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Forms\Form1.resx">
+      <DependentUpon>Form1.cs</DependentUpon>
+    </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup>
+    <BootstrapperPackage Include=".NETFramework,Version=v4.7.2">
+      <Visible>False</Visible>
+      <ProductName>Microsoft .NET Framework 4.7.2 %28x86 和 x64%29</ProductName>
+      <Install>true</Install>
+    </BootstrapperPackage>
+    <BootstrapperPackage Include="Microsoft.Net.Framework.3.5.SP1">
+      <Visible>False</Visible>
+      <ProductName>.NET Framework 3.5 SP1</ProductName>
+      <Install>false</Install>
+    </BootstrapperPackage>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
